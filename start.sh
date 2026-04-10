@@ -37,7 +37,12 @@ fi
 # Build frontend in production
 if [ "$MODE" = "production" ]; then
   echo "[pokt Craft] Fazendo build do frontend..."
-  cd "$SCRIPT_DIR" && VITE_API_URL="http://$(hostname -I | awk '{print $1}'):$BACKEND_PORT" npm run build
+  if [ "${VITE_USE_SAME_ORIGIN_API:-}" = "true" ] || [ "${VITE_USE_SAME_ORIGIN_API:-}" = "1" ]; then
+    echo "[pokt Craft] Build em modo same-origin (API em /api via proxy HTTPS — defina nginx/Caddy)."
+    cd "$SCRIPT_DIR" && VITE_USE_SAME_ORIGIN_API=true npm run build
+  else
+    cd "$SCRIPT_DIR" && VITE_API_URL="http://$(hostname -I | awk '{print $1}'):$BACKEND_PORT" npm run build
+  fi
 fi
 
 # Start backend

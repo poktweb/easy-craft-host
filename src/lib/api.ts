@@ -5,10 +5,35 @@ function getDefaultApiUrl() {
   return `${protocol}//${hostname}:3001`;
 }
 
-const API_URL = import.meta.env.VITE_API_URL || getDefaultApiUrl();
-const WS_URL = API_URL.replace(/^http/, "ws") + "/ws";
+function envTruthy(v: string | undefined): boolean {
+  return v === "true" || v === "1" || v === "yes";
+}
 
-export { API_URL, WS_URL };
+/** Mesma origem: URLs relativas (/api/...). Use com proxy reverso (HTTPS) apontando /api e /ws para o Node. */
+const useSameOriginApi = envTruthy(import.meta.env.VITE_USE_SAME_ORIGIN_API);
+
+const rawViteApi = import.meta.env.VITE_API_URL;
+const trimmedViteApi = rawViteApi != null ? String(rawViteApi).trim() : "";
+
+const API_URL: string = useSameOriginApi
+  ? ""
+  : trimmedViteApi.length > 0
+    ? trimmedViteApi.replace(/\/$/, "")
+    : getDefaultApiUrl();
+
+/**
+ * URL do WebSocket dos logs (só válida no browser em modo same-origin ou com base absoluta).
+ */
+export function getWebSocketUrl(): string {
+  if (API_URL === "") {
+    if (typeof window === "undefined") return "ws://localhost:3001/ws";
+    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${wsProto}//${window.location.host}/ws`;
+  }
+  return API_URL.replace(/^http/, "ws") + "/ws";
+}
+
+export { API_URL };
 
 let currentInstanceId = "default";
 

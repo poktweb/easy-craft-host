@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { WS_URL, apiStartServer, apiStopServer, apiRestartServer, apiSendCommand, setApiInstanceId } from "@/lib/api";
+import { getWebSocketUrl, apiStartServer, apiStopServer, apiRestartServer, apiSendCommand, setApiInstanceId } from "@/lib/api";
 import { toast } from "sonner";
 
 export type ServerStatus = "stopped" | "starting" | "running" | "stopping";
@@ -52,7 +52,7 @@ export function useServerState(instanceId: string) {
 
     setApiInstanceId(instanceId);
     const ws = new WebSocket(
-      `${WS_URL}?token=${encodeURIComponent(token)}&instance=${encodeURIComponent(instanceId)}`
+      `${getWebSocketUrl()}?token=${encodeURIComponent(token)}&instance=${encodeURIComponent(instanceId)}`
     );
     wsRef.current = ws;
 
