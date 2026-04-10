@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { Zap, Settings, Eye, Globe, ArrowRight, Download, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import { Zap, Settings, Eye, Globe, ArrowRight, Download, Loader2, CheckCircle2, AlertCircle, Plug, Link2 } from "lucide-react";
 import { API_URL } from "@/lib/api";
 
 interface ServerType {
@@ -37,6 +38,13 @@ const SERVER_TYPES: ServerType[] = [
     icon: <Globe className="h-6 w-6" />,
     category: "vanilla",
   },
+  {
+    id: "folia",
+    name: "Folia",
+    description: "Fork do Paper focado em alto desempenho com paralelismo.",
+    icon: <Zap className="h-6 w-6" />,
+    category: "plugins",
+  },
 ];
 
 interface CurrentInfo {
@@ -67,6 +75,11 @@ export default function ServerVersions() {
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installProgress, setInstallProgress] = useState<InstallProgress>({ status: "idle" });
+  const [pluginUrl, setPluginUrl] = useState("");
+  const [pluginName, setPluginName] = useState("");
+  const [plugins, setPlugins] = useState<string[]>([]);
+  const [loadingPlugins, setLoadingPlugins] = useState(false);
+  const [installingPlugin, setInstallingPlugin] = useState(false);
 
   // Fetch current server info
   useEffect(() => {
@@ -75,6 +88,23 @@ export default function ServerVersions() {
       .then(setCurrentInfo)
       .catch(() => {});
   }, []);
+
+  const loadPlugins = useCallback(async () => {
+    setLoadingPlugins(true);
+    try {
+      const res = await fetch(`${API_URL}/api/plugins/list`, { headers: getAuthHeaders() });
+      const data = await res.json();
+      if (Array.isArray(data)) setPlugins(data);
+    } catch {
+      // Silencioso: apenas lista auxiliar
+    } finally {
+      setLoadingPlugins(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPlugins();
+  }, [loadPlugins]);
 
   // Fetch versions when type selected
   const loadVersions = useCallback(async (type: string) => {
@@ -120,6 +150,46 @@ export default function ServerVersions() {
       setInstallProgress({ status: "error", error: "Erro de conexão" });
     } finally {
       setInstalling(false);
+    }
+  };
+
+  const selectedOrCurrentType = selectedType || currentInfo?.type || "";
+  const supportsPlugins = ["paper", "purpur", "folia"].includes(selectedOrCurrentType);
+
+  const handleInstallPlugin = async () => {
+    if (!pluginUrl.trim()) {
+      toast.error("Informe a URL direta do plugin (.jar)");
+      return;
+    }
+    if (!supportsPlugins) {
+      toast.error("Selecione um modo compatível com plugins (Paper, Purpur ou Folia)");
+      return;
+    }
+
+    setInstallingPlugin(true);
+    try {
+      const res = await fetch(`${API_URL}/api/plugins/install`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          url: pluginUrl.trim(),
+          name: pluginName.trim() || undefined,
+          serverType: selectedOrCurrentType,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        toast.error(data.error || "Falha ao instalar plugin");
+        return;
+      }
+      toast.success(`Plugin ${data.name || "instalado"} com sucesso!`);
+      setPluginUrl("");
+      setPluginName("");
+      await loadPlugins();
+    } catch {
+      toast.error("Erro ao baixar plugin");
+    } finally {
+      setInstallingPlugin(false);
     }
   };
 
@@ -259,6 +329,63 @@ export default function ServerVersions() {
           </CardContent>
         </Card>
       )}
+
+      {/* Plugin installer */}
+      <Card className="border-border/50">
+        <CardContent className="py-6 space-y-4">
+          <h3 className="font-bold text-foreground flex items-center gap-2">
+            <Plug className="h-5 w-5 text-primary" />
+            Instalar Plugins
+          </h3>
+
+          {!supportsPlugins && (
+            <p className="text-sm text-muted-foreground">
+              Para instalar plugins, escolha um modo compatível: <span className="font-medium">Paper, Purpur ou Folia</span>.
+            </p>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Input
+              placeholder="URL direta do plugin .jar"
+              value={pluginUrl}
+              onChange={(e) => setPluginUrl(e.target.value)}
+              disabled={!supportsPlugins || installingPlugin}
+            />
+            <Input
+              placeholder="Nome opcional (sem .jar)"
+              value={pluginName}
+              onChange={(e) => setPluginName(e.target.value)}
+              disabled={!supportsPlugins || installingPlugin}
+            />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button onClick={handleInstallPlugin} disabled={!supportsPlugins || installingPlugin || !pluginUrl.trim()} className="gap-2">
+              {installingPlugin ? (
+                <><Loader2 className="h-4 w-4 animate-spin" />Baixando plugin...</>
+              ) : (
+                <><Link2 className="h-4 w-4" />Baixar Plugin</>
+              )}
+            </Button>
+            <p className="text-xs text-muted-foreground">Use links diretos para arquivos `.jar`.</p>
+          </div>
+
+          <div className="rounded-lg border border-border/50 p-3">
+            <p className="text-sm font-medium text-foreground mb-2">Plugins já baixados</p>
+            {loadingPlugins ? (
+              <p className="text-sm text-muted-foreground">Carregando...</p>
+            ) : plugins.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Nenhum plugin encontrado na pasta `plugins`.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {plugins.map((plugin) => (
+                  <Badge key={plugin} variant="secondary">{plugin}</Badge>
+                ))}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

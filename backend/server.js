@@ -605,27 +605,32 @@ app.get("/api/versions/current", (req, res) => {
 // List available versions for a server type
 app.get("/api/versions/:type", async (req, res) => {
   const { type } = req.params;
+  const limit = parseInt(req.query.limit, 10);
   try {
     let versions = [];
     if (type === "paper") {
       const resp = await httpGet("https://api.papermc.io/v2/projects/paper");
       const data = JSON.parse(resp.data);
-      versions = data.versions.reverse().slice(0, 20);
+      versions = data.versions.reverse();
     } else if (type === "purpur") {
       const resp = await httpGet("https://api.purpurmc.org/v2/purpur");
       const data = JSON.parse(resp.data);
-      versions = data.versions.reverse().slice(0, 20);
+      versions = data.versions.reverse();
+    } else if (type === "folia") {
+      const resp = await httpGet("https://api.papermc.io/v2/projects/folia");
+      const data = JSON.parse(resp.data);
+      versions = data.versions.reverse();
     } else if (type === "vanilla") {
       const resp = await httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
       const data = JSON.parse(resp.data);
       versions = data.versions
         .filter((v) => v.type === "release")
-        .slice(0, 20)
         .map((v) => v.id);
     } else {
-      return res.status(400).json({ error: "Tipo inválido. Use: paper, purpur, vanilla" });
+      return res.status(400).json({ error: "Tipo inválido. Use: paper, purpur, folia, vanilla" });
     }
-    res.json({ versions });
+    const finalVersions = Number.isFinite(limit) && limit > 0 ? versions.slice(0, limit) : versions;
+    res.json({ versions: finalVersions });
   } catch (err) {
     res.status(500).json({ error: `Erro ao buscar versões: ${err.message}` });
   }
@@ -653,6 +658,12 @@ app.post("/api/versions/install", async (req, res) => {
       downloadUrl = `https://api.papermc.io/v2/projects/paper/versions/${version}/builds/${latestBuild.build}/downloads/${fileName}`;
     } else if (type === "purpur") {
       downloadUrl = `https://api.purpurmc.org/v2/purpur/${version}/latest/download`;
+    } else if (type === "folia") {
+      const buildsResp = await httpGet(`https://api.papermc.io/v2/projects/folia/versions/${version}/builds`);
+      const buildsData = JSON.parse(buildsResp.data);
+      const latestBuild = buildsData.builds[buildsData.builds.length - 1];
+      const fileName = latestBuild.downloads.application.name;
+      downloadUrl = `https://api.papermc.io/v2/projects/folia/versions/${version}/builds/${latestBuild.build}/downloads/${fileName}`;
     } else if (type === "vanilla") {
       const manifestResp = await httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
       const manifest = JSON.parse(manifestResp.data);
@@ -694,6 +705,54 @@ app.post("/api/versions/install", async (req, res) => {
 
 app.get("/api/versions/install/progress", (req, res) => {
   res.json(installProgress || { status: "idle" });
+});
+
+// ===================== ROUTES: PLUGINS =====================
+const PLUGIN_COMPATIBLE_TYPES = new Set(["paper", "purpur", "folia"]);
+
+function sanitizePluginName(name) {
+  return String(name || "")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+    .trim();
+}
+
+app.get("/api/plugins/list", (req, res) => {
+  try {
+    const pluginsDir = path.join(SERVER_DIR, "plugins");
+    if (!fs.existsSync(pluginsDir)) return res.json([]);
+    const plugins = fs.readdirSync(pluginsDir)
+      .filter((name) => name.toLowerCase().endsWith(".jar"))
+      .sort((a, b) => a.localeCompare(b));
+    res.json(plugins);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/plugins/install", async (req, res) => {
+  const { url, name, serverType } = req.body || {};
+  if (!url || typeof url !== "string") {
+    return res.status(400).json({ error: "URL do plugin é obrigatória" });
+  }
+  if (!serverType || !PLUGIN_COMPATIBLE_TYPES.has(serverType)) {
+    return res.status(400).json({ error: "O modo selecionado não suporta plugins (.jar)" });
+  }
+
+  try {
+    const pluginsDir = path.join(SERVER_DIR, "plugins");
+    ensureDir(pluginsDir);
+
+    const urlObj = new URL(url);
+    const rawName = sanitizePluginName(name) || sanitizePluginName(path.basename(urlObj.pathname)) || "plugin.jar";
+    const fileName = rawName.toLowerCase().endsWith(".jar") ? rawName : `${rawName}.jar`;
+    const dest = path.join(pluginsDir, fileName);
+
+    await downloadFile(url, dest);
+    addLog("INFO", `Plugin instalado: ${fileName}`);
+    res.json({ success: true, name: fileName });
+  } catch (err) {
+    res.status(500).json({ error: `Falha ao baixar plugin: ${err.message}` });
+  }
 });
 
 // ===================== HELPERS =====================
