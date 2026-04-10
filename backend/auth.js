@@ -14,7 +14,10 @@ const DATA_PATH =
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
 const TOKEN_EXPIRY = "24h";
 
-/** @type {{ users: Array<{ id: number; username: string; password_hash: string; salt: string }>; nextId: number }} */
+/** Login fixo de administrador (pode sobrescrever com MC_ADMIN_USER). Só este usuário acessa o painel de liberação. */
+const ADMIN_USERNAME = String(process.env.MC_ADMIN_USER || "poktweb").toLowerCase();
+
+/** @type {{ users: Array<{ id: number; username: string; password_hash: string; salt: string; canHost?: boolean }>; nextId: number }} */
 let state = { users: [], nextId: 1 };
 
 function loadState() {
@@ -39,26 +42,72 @@ function saveState() {
 
 loadState();
 
+function migrateUserFlags() {
+  let changed = false;
+  for (const u of state.users) {
+    if (u.canHost === undefined) {
+      u.canHost = u.username.toLowerCase() === ADMIN_USERNAME;
+      changed = true;
+    }
+  }
+  if (changed) {
+    try {
+      saveState();
+    } catch (e) {
+      console.error("MC Auth: migrateUserFlags save:", e.message);
+    }
+  }
+}
+
+migrateUserFlags();
+
+function isAdminUsername(username) {
+  return String(username || "").toLowerCase() === ADMIN_USERNAME;
+}
+
+/** ID numérico do usuário administrador (poktweb / MC_ADMIN_USER), para migração de instâncias. */
+function getAdminUserId() {
+  const u = state.users.find((x) => isAdminUsername(x.username));
+  return u ? u.id : null;
+}
+
 function hashPassword(password, salt) {
   return crypto.pbkdf2Sync(password, salt, 100000, 64, "sha512").toString("hex");
 }
 
-function createUser(username, password) {
+/**
+ * @param {string} username
+ * @param {string} password
+ * @param {{ canHost?: boolean }} [opts]
+ */
+function createUser(username, password, opts = {}) {
   const salt = crypto.randomBytes(16).toString("hex");
   const password_hash = hashPassword(password, salt);
-  if (state.users.some((u) => u.username === username)) {
+  const uname = String(username || "").trim();
+  if (!uname) return { error: "Usuário inválido" };
+  if (state.users.some((u) => u.username === uname)) {
     return { error: "Usuário já existe" };
   }
+  let canHost = opts.canHost === true;
+  if (isAdminUsername(uname)) canHost = true;
   const id = state.nextId++;
-  state.users.push({ id, username, password_hash, salt });
+  state.users.push({ id, username: uname, password_hash, salt, canHost });
   try {
     saveState();
-    return { success: true };
+    return { success: true, id };
   } catch (err) {
     state.users.pop();
     state.nextId--;
     return { error: err.message };
   }
+}
+
+/** Cadastro público: sempre sem permissão para criar servidores até o admin habilitar. */
+function registerUser(username, password) {
+  if (!password || String(password).length < 4) {
+    return { error: "Senha deve ter pelo menos 4 caracteres" };
+  }
+  return createUser(username, password, { canHost: false });
 }
 
 function verifyUser(username, password) {
@@ -67,6 +116,49 @@ function verifyUser(username, password) {
   const hash = hashPassword(password, user.salt);
   if (hash !== user.password_hash) return null;
   return { id: user.id, username: user.username };
+}
+
+function getUserById(userId) {
+  return state.users.find((u) => u.id === userId) || null;
+}
+
+function authProfileForUserId(userId) {
+  const u = getUserById(userId);
+  if (!u) return { canHost: false, isAdmin: false };
+  const canHost = u.canHost === true || isAdminUsername(u.username);
+  return { canHost, isAdmin: isAdminUsername(u.username) };
+}
+
+function userCanCreateInstances(userId) {
+  return authProfileForUserId(userId).canHost;
+}
+
+function listUsersForAdmin() {
+  return state.users.map((u) => ({
+    id: u.id,
+    username: u.username,
+    canHost: u.canHost === true || isAdminUsername(u.username),
+    isAdmin: isAdminUsername(u.username),
+  }));
+}
+
+function setUserCanHost(actorUserId, targetUserId, canHost) {
+  const actor = getUserById(actorUserId);
+  if (!actor || !isAdminUsername(actor.username)) {
+    return { error: "Apenas o administrador pode alterar permissões" };
+  }
+  const target = getUserById(targetUserId);
+  if (!target) return { error: "Usuário não encontrado" };
+  if (isAdminUsername(target.username)) {
+    return { error: "A conta de administrador sempre pode hospedar" };
+  }
+  target.canHost = !!canHost;
+  try {
+    saveState();
+    return { success: true };
+  } catch (err) {
+    return { error: err.message };
+  }
 }
 
 function generateToken(user) {
@@ -103,7 +195,9 @@ function changePassword(userId, oldPassword, newPassword) {
 }
 
 function authMiddleware(req, res, next) {
-  if (req.path === "/api/auth/login" || req.path === "/api/auth/setup" || req.path === "/api/auth/status") {
+  // Com app.use("/api", authMiddleware), req.path costuma ser "/auth/..." (sem prefixo /api).
+  const p = req.path || "";
+  if (p === "/auth/login" || p === "/auth/setup" || p === "/auth/status" || p === "/auth/register") {
     return next();
   }
   const authHeader = req.headers.authorization;
@@ -120,16 +214,23 @@ function authMiddleware(req, res, next) {
 }
 
 if (!hasUsers()) {
-  createUser("poktweb", "84005787");
+  createUser("poktweb", "84005787", { canHost: true });
   console.log("Usuário padrão criado: poktweb");
 }
 
 module.exports = {
   createUser,
+  registerUser,
   verifyUser,
   generateToken,
   verifyToken,
   hasUsers,
   changePassword,
   authMiddleware,
+  authProfileForUserId,
+  userCanCreateInstances,
+  isAdminUsername,
+  getAdminUserId,
+  listUsersForAdmin,
+  setUserCanHost,
 };

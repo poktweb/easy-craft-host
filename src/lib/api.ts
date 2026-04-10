@@ -186,6 +186,28 @@ export async function apiCreateInstance(name: string) {
   return res.json();
 }
 
+export interface AdminUserRow {
+  id: number;
+  username: string;
+  canHost: boolean;
+  isAdmin: boolean;
+}
+
+export async function apiAdminListUsers(): Promise<AdminUserRow[]> {
+  const res = await authFetch(`${API_URL}/api/admin/users`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Erro ao listar usuários");
+  return data as AdminUserRow[];
+}
+
+export async function apiAdminSetCanHost(userId: number, canHost: boolean): Promise<{ success?: boolean; error?: string }> {
+  const res = await authFetch(`${API_URL}/api/admin/users/${userId}/can-host`, {
+    method: "PATCH",
+    body: JSON.stringify({ canHost }),
+  });
+  return res.json();
+}
+
 export async function apiGetInstanceSettings() {
   const res = await authFetch(`${API_URL}/api/instance-settings`);
   return res.json();

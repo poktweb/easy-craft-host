@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { Plus, Server, ArrowRight, LogOut, Shield } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { Plus, Server, ArrowRight, LogOut, Shield, Users, AlertCircle, Copy } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { apiCreateInstance, apiListInstances } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "sonner";
 
 export interface InstanceSummary {
@@ -14,11 +15,12 @@ export interface InstanceSummary {
   mode?: string;
   status?: string;
   serverPort?: number;
+  connectAddress?: string;
 }
 
 export default function InstancesHome() {
   const navigate = useNavigate();
-  const { username, logout } = useAuth();
+  const { username, logout, canHost, isAdmin, refreshProfile } = useAuth();
   const [instances, setInstances] = useState<InstanceSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -41,6 +43,10 @@ export default function InstancesHome() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    refreshProfile();
+  }, [refreshProfile]);
 
   async function handleCreate() {
     setCreating(true);
@@ -72,6 +78,14 @@ export default function InstancesHome() {
             <span className="text-lg font-bold text-foreground">MCHost</span>
           </div>
           <div className="flex items-center gap-3">
+            {isAdmin && (
+              <Button variant="outline" size="sm" className="gap-2" asChild>
+                <Link to="/admin/usuarios">
+                  <Users className="h-4 w-4" />
+                  Usuários
+                </Link>
+              </Button>
+            )}
             <div className="flex items-center gap-2 rounded-lg bg-secondary/50 px-3 py-1.5">
               <Shield className="h-4 w-4 text-primary" />
               <span className="text-sm font-medium">{username}</span>
@@ -88,9 +102,29 @@ export default function InstancesHome() {
         <div>
           <h1 className="text-2xl font-bold text-foreground">Suas instâncias</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Cada instância tem pasta, console, backups e configurações separados. Entre em uma para gerenciar.
+            Cada conta vê apenas as próprias instâncias (dados isolados). O endereço para jogadores usa o IP público e a porta da instância.
           </p>
         </div>
+
+        {!canHost && (
+          <Alert className="max-w-2xl border-amber-500/30 bg-amber-500/5">
+            <AlertCircle className="h-4 w-4 text-amber-600" />
+            <AlertTitle>Conta sem acesso à hospedagem</AlertTitle>
+            <AlertDescription>
+              Você não pode ver nem abrir instâncias até o administrador liberar sua conta. Depois da liberação, só aparecem servidores criados por você.
+              {isAdmin ? (
+                <span>
+                  {" "}
+                  Você pode gerenciar isso em{" "}
+                  <Link to="/admin/usuarios" className="text-primary font-medium underline underline-offset-2">
+                    Usuários
+                  </Link>
+                  .
+                </span>
+              ) : null}
+            </AlertDescription>
+          </Alert>
+        )}
 
         <div className="flex flex-wrap gap-3 items-end max-w-xl">
           <div className="flex-1 min-w-[200px] space-y-2">
@@ -99,9 +133,10 @@ export default function InstancesHome() {
               placeholder="Nome (ex.: Survival, Creative)"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
+              disabled={!canHost}
             />
           </div>
-          <Button onClick={handleCreate} disabled={creating} className="gap-2">
+          <Button onClick={handleCreate} disabled={creating || !canHost} className="gap-2" title={!canHost ? "Aguardando liberação do administrador" : undefined}>
             <Plus className="h-4 w-4" />
             {creating ? "Criando…" : "Criar"}
           </Button>
@@ -133,9 +168,24 @@ export default function InstancesHome() {
                       {inst.status === "running" ? "Online" : "Parado"}
                     </span>
                   </div>
-                  <div className="text-xs text-muted-foreground font-mono space-y-0.5">
-                    <p>ID: {inst.id}</p>
-                    {inst.serverPort != null && <p>Porta do jogo: {inst.serverPort}</p>}
+                  <div className="text-xs text-muted-foreground space-y-1.5">
+                    <p className="font-mono">ID: {inst.id}</p>
+                    {inst.connectAddress ? (
+                      <button
+                        type="button"
+                        className="flex items-center gap-1.5 text-left w-full rounded-md border border-border/60 bg-background/50 px-2 py-1.5 font-mono text-primary hover:bg-primary/5 transition-colors"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void navigator.clipboard.writeText(inst.connectAddress!);
+                          toast.success("IP copiado");
+                        }}
+                      >
+                        <span className="truncate flex-1">{inst.connectAddress}</span>
+                        <Copy className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                      </button>
+                    ) : inst.serverPort != null ? (
+                      <p className="font-mono">Porta: {inst.serverPort}</p>
+                    ) : null}
                   </div>
                   <Button variant="secondary" size="sm" className="w-full gap-2 group-hover:bg-primary group-hover:text-primary-foreground">
                     Abrir painel

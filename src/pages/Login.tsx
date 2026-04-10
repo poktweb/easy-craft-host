@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -84,8 +85,15 @@ export default function Login() {
             </Button>
           </form>
 
-          <p className="text-xs text-muted-foreground text-center mt-6">
-            Acesso restrito ao administrador do servidor.
+          <p className="text-sm text-center mt-5">
+            <span className="text-muted-foreground">Não tem conta? </span>
+            <Link to="/cadastro" className="text-primary font-medium hover:underline">
+              Cadastre-se
+            </Link>
+          </p>
+
+          <p className="text-xs text-muted-foreground text-center mt-4">
+            Novas contas precisam de liberação do administrador para acessar instâncias.
           </p>
         </div>
       </div>

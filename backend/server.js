@@ -9,7 +9,20 @@ const path = require("path");
 const multer = require("multer");
 const archiver = require("archiver");
 const pidusage = require("pidusage");
-const { verifyUser, generateToken, verifyToken, changePassword, authMiddleware } = require("./auth");
+const {
+  verifyUser,
+  generateToken,
+  verifyToken,
+  changePassword,
+  authMiddleware,
+  authProfileForUserId,
+  userCanCreateInstances,
+  isAdminUsername,
+  getAdminUserId,
+  listUsersForAdmin,
+  setUserCanHost,
+  registerUser,
+} = require("./auth");
 
 // ===================== CONFIG =====================
 const PORT = process.env.PORT || 3001;
@@ -27,6 +40,8 @@ const MAX_RAM_DISPLAY = process.env.MC_MAX_RAM_DISPLAY || MAX_RAM.replace("M", "
 
 const INSTANCES_STORE = path.join(__dirname, "instances.json");
 const INSTANCES_DATA_DIR = path.join(__dirname, "data_instances");
+/** IP ou hostname público exibido no painel (Minecraft: conexão direta IP:porta). */
+const PUBLIC_HOST = String(process.env.MC_PUBLIC_HOST || "144.91.82.148").replace(/\/$/, "");
 const SETTINGS_FILENAME = ".mchost_settings.json";
 const DEFAULT_MC_PORT = 25565;
 const MAX_MC_PORT = 65535;
@@ -178,6 +193,9 @@ function loadInstancesRegistry() {
         } catch (e) {
           console.error("[MCHost] normalizeInstanceServerPorts:", e.message);
         }
+        if (migrateInstanceOwners(data)) {
+          saveInstancesRegistry(data);
+        }
         return data;
       }
     } catch (_e) {}
@@ -185,6 +203,7 @@ function loadInstancesRegistry() {
   const initial = {
     instances: [{ id: "default", name: "Servidor principal", mode: "legacy" }],
   };
+  migrateInstanceOwners(initial);
   ensureDir(path.dirname(INSTANCES_STORE));
   fs.writeFileSync(INSTANCES_STORE, JSON.stringify(initial, null, 2), "utf-8");
   return initial;
@@ -202,6 +221,20 @@ function getInstancePath(inst) {
 function findInstance(id) {
   const reg = loadInstancesRegistry();
   return reg.instances.find((i) => i.id === id);
+}
+
+/** Instâncias sem dono (legado) passam a pertencer ao administrador. */
+function migrateInstanceOwners(reg) {
+  const adminId = getAdminUserId();
+  if (adminId == null) return false;
+  let changed = false;
+  for (const i of reg.instances) {
+    if (i.ownerUserId === undefined || i.ownerUserId === null) {
+      i.ownerUserId = adminId;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 function createEmptyInstanceState() {
@@ -266,11 +299,22 @@ function attachInstance(req, res, next) {
   const pathOnly = req.originalUrl.split("?")[0];
   if (!pathOnly.startsWith("/api/")) return next();
   if (pathOnly.startsWith("/api/auth/")) return next();
+  if (pathOnly.startsWith("/api/admin/")) return next();
   if (pathOnly === "/api/instances" && (req.method === "GET" || req.method === "POST")) return next();
+
+  if (!userCanCreateInstances(req.user.id)) {
+    return res.status(403).json({
+      error:
+        "Sua conta não está autorizada a acessar instâncias. Peça ao administrador para liberar o acesso à hospedagem.",
+    });
+  }
 
   const instanceId = String(req.headers["x-mchost-instance"] || "default").trim();
   const inst = findInstance(instanceId);
   if (!inst) return res.status(404).json({ error: "Instância não encontrada" });
+  if (Number(inst.ownerUserId) !== Number(req.user.id)) {
+    return res.status(403).json({ error: "Esta instância não pertence à sua conta." });
+  }
   req.mchostInstanceId = instanceId;
   req.instanceDir = getInstancePath(inst);
   ensureDir(req.instanceDir);
@@ -289,7 +333,8 @@ app.post("/api/auth/login", (req, res) => {
   const user = verifyUser(username, password);
   if (!user) return res.status(401).json({ error: "Usuário ou senha incorretos" });
   const token = generateToken(user);
-  res.json({ token, username: user.username });
+  const profile = authProfileForUserId(user.id);
+  res.json({ token, username: user.username, ...profile });
 });
 
 app.get("/api/auth/validate", (req, res) => {
@@ -297,7 +342,20 @@ app.get("/api/auth/validate", (req, res) => {
   if (!authHeader?.startsWith("Bearer ")) return res.status(401).json({ error: "Token não fornecido" });
   const decoded = verifyToken(authHeader.split(" ")[1]);
   if (!decoded) return res.status(401).json({ error: "Token inválido" });
-  res.json({ valid: true, username: decoded.username });
+  const profile = authProfileForUserId(decoded.id);
+  res.json({ valid: true, username: decoded.username, ...profile });
+});
+
+app.post("/api/auth/register", (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: "Usuário e senha são obrigatórios" });
+  const result = registerUser(username, password);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.status(201).json({
+    success: true,
+    message:
+      "Conta criada. Entre com seu usuário e senha. Você só verá e poderá usar instâncias depois que o administrador liberar sua conta para hospedagem.",
+  });
 });
 
 app.post("/api/auth/change-password", authMiddleware, (req, res) => {
@@ -311,6 +369,27 @@ app.post("/api/auth/change-password", authMiddleware, (req, res) => {
 // Apply auth middleware to all other routes
 app.use("/api", authMiddleware);
 app.use(attachInstance);
+
+app.get("/api/admin/users", (req, res) => {
+  if (!isAdminUsername(req.user.username)) {
+    return res.status(403).json({ error: "Acesso restrito ao administrador" });
+  }
+  res.json(listUsersForAdmin());
+});
+
+app.patch("/api/admin/users/:id/can-host", (req, res) => {
+  if (!isAdminUsername(req.user.username)) {
+    return res.status(403).json({ error: "Acesso restrito ao administrador" });
+  }
+  const targetId = parseInt(req.params.id, 10);
+  if (!Number.isFinite(targetId)) return res.status(400).json({ error: "ID inválido" });
+  const want = req.body?.canHost;
+  if (typeof want !== "boolean") return res.status(400).json({ error: "Envie canHost: true ou false" });
+  const result = setUserCanHost(req.user.id, targetId, want);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json({ success: true });
+});
+
 const server = http.createServer(app);
 
 // ===================== WEBSOCKET =====================
@@ -321,11 +400,13 @@ wss.on("connection", (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const token = url.searchParams.get("token");
   const instanceId = url.searchParams.get("instance") || "default";
-  if (!token || !verifyToken(token)) {
+  const decoded = token ? verifyToken(token) : null;
+  if (!decoded || !userCanCreateInstances(decoded.id)) {
     ws.close(4001, "Unauthorized");
     return;
   }
-  if (!findInstance(instanceId)) {
+  const inst = findInstance(instanceId);
+  if (!inst || Number(inst.ownerUserId) !== Number(decoded.id)) {
     ws.close(4004, "Unknown instance");
     return;
   }
@@ -625,16 +706,23 @@ function getDirSizeMB(dirPath) {
 // ===================== ROUTES: INSTANCES (lista / criar) =====================
 app.get("/api/instances", (req, res) => {
   try {
+    if (!userCanCreateInstances(req.user.id)) {
+      return res.json([]);
+    }
     const reg = loadInstancesRegistry();
-    const out = reg.instances.map((i) => {
+    const uid = Number(req.user.id);
+    const mine = reg.instances.filter((i) => Number(i.ownerUserId) === uid);
+    const out = mine.map((i) => {
       const st = getInstanceState(i.id);
       const dir = getInstancePath(i);
+      const serverPort = getEffectiveServerPort(i, dir);
       return {
         id: i.id,
         name: i.name,
         mode: i.mode,
         status: st.serverStatus,
-        serverPort: getEffectiveServerPort(i, dir),
+        serverPort,
+        connectAddress: `${PUBLIC_HOST}:${serverPort}`,
       };
     });
     res.json(out);
@@ -645,16 +733,28 @@ app.get("/api/instances", (req, res) => {
 
 app.post("/api/instances", (req, res) => {
   try {
+    if (!userCanCreateInstances(req.user.id)) {
+      return res.status(403).json({
+        error:
+          "Sua conta ainda não pode criar servidores. Peça ao administrador para habilitar a hospedagem no painel de usuários.",
+      });
+    }
     const name = String(req.body?.name || "Novo servidor").trim() || "Novo servidor";
     const reg = loadInstancesRegistry();
     const id = `inst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const serverPort = allocateNextServerPort(reg);
-    reg.instances.push({ id, name, mode: "data", serverPort });
+    reg.instances.push({ id, name, mode: "data", serverPort, ownerUserId: req.user.id });
     saveInstancesRegistry(reg);
     const dir = getInstancePath({ id, mode: "data" });
     ensureDir(dir);
     writeServerPortInProperties(dir, serverPort);
-    res.json({ success: true, id, name, serverPort });
+    res.json({
+      success: true,
+      id,
+      name,
+      serverPort,
+      connectAddress: `${PUBLIC_HOST}:${serverPort}`,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -733,7 +833,14 @@ app.post("/api/server/command", (req, res) => {
 
 app.get("/api/server/status", (req, res) => {
   const st = getInstanceState(req.mchostInstanceId);
-  res.json({ status: st.serverStatus });
+  const inst = findInstance(req.mchostInstanceId);
+  const port = getEffectiveServerPort(inst, req.instanceDir);
+  res.json({
+    status: st.serverStatus,
+    publicHost: PUBLIC_HOST,
+    gamePort: port,
+    connectAddress: `${PUBLIC_HOST}:${port}`,
+  });
 });
 
 app.get("/api/server/stats", async (req, res) => {

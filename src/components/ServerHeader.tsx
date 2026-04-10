@@ -11,6 +11,8 @@ interface Props {
   onStart: () => void;
   onStop: () => void;
   onRestart: () => void;
+  /** Endereço público para jogadores (ex.: 144.91.82.148:25565). Se omitido, usa server.properties. */
+  connectAddress?: string | null;
 }
 
 function formatUptime(seconds: number): string {
@@ -20,7 +22,7 @@ function formatUptime(seconds: number): string {
   return `${h}H ${String(m).padStart(2, "0")}M ${String(s).padStart(2, "0")}S`;
 }
 
-export default function ServerHeader({ status, stats, onStart, onStop, onRestart }: Props) {
+export default function ServerHeader({ status, stats, onStart, onStop, onRestart, connectAddress }: Props) {
   const isRunning = status === "running";
   const isLoading = status === "starting" || status === "stopping";
   const [serverProps, setServerProps] = useState<Record<string, string>>({});
@@ -34,10 +36,12 @@ export default function ServerHeader({ status, stats, onStart, onStop, onRestart
   }, []);
 
   const ip = useMemo(() => {
+    const trimmed = (connectAddress || "").trim();
+    if (trimmed) return trimmed;
     const serverIp = (serverProps["server-ip"] || "").trim();
     const serverPort = (serverProps["server-port"] || "25565").trim();
     return `${serverIp || "0.0.0.0"}:${serverPort || "25565"}`;
-  }, [serverProps]);
+  }, [connectAddress, serverProps]);
 
   return (
     <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
@@ -51,7 +55,8 @@ export default function ServerHeader({ status, stats, onStart, onStop, onRestart
             className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary transition-colors"
             onClick={() => { navigator.clipboard.writeText(ip); toast.success("IP copiado!"); }}
           >
-            IP: <span className="font-mono text-primary/80">{ip}</span> <Copy className="h-3.5 w-3.5" />
+            IP para conectar: <span className="font-mono text-primary/80">{ip}</span>{" "}
+            <Copy className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>

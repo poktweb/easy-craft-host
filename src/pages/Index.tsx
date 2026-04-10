@@ -1,8 +1,8 @@
-import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Terminal, FolderOpen, Settings2, Archive, Wrench, Wifi, WifiOff, LogOut, Shield, Box, ArrowLeft } from "lucide-react";
-import { setApiInstanceId } from "@/lib/api";
+import { setApiInstanceId, apiListInstances, apiGetStatus } from "@/lib/api";
 import { useServerState } from "@/hooks/useServerState";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -17,10 +17,59 @@ import ServerVersions from "@/components/ServerVersions";
 
 const Index = () => {
   const { instanceId = "default" } = useParams<{ instanceId: string }>();
+  const navigate = useNavigate();
+  const { username, logout, canHost } = useAuth();
+  const [panelReady, setPanelReady] = useState(false);
+  const [connectAddress, setConnectAddress] = useState<string | null>(null);
+
   setApiInstanceId(instanceId);
   const server = useServerState(instanceId);
-  const { username, logout } = useAuth();
   const [tab, setTab] = useState("console");
+
+  useEffect(() => {
+    if (!canHost) {
+      navigate("/", { replace: true });
+      return;
+    }
+    let cancelled = false;
+    setPanelReady(false);
+    apiListInstances()
+      .then((list) => {
+        if (cancelled) return;
+        if (!Array.isArray(list) || !list.some((x) => x.id === instanceId)) {
+          navigate("/", { replace: true });
+          return;
+        }
+        setPanelReady(true);
+      })
+      .catch(() => navigate("/", { replace: true }));
+    return () => {
+      cancelled = true;
+    };
+  }, [canHost, instanceId, navigate]);
+
+  useEffect(() => {
+    if (!panelReady) return;
+    setApiInstanceId(instanceId);
+    apiGetStatus()
+      .then((d) => {
+        if (d && typeof d === "object" && "connectAddress" in d && typeof (d as { connectAddress?: string }).connectAddress === "string") {
+          setConnectAddress((d as { connectAddress: string }).connectAddress);
+        }
+      })
+      .catch(() => setConnectAddress(null));
+  }, [panelReady, instanceId]);
+
+  if (!panelReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+          <span className="text-muted-foreground text-sm">Verificando instância…</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -70,6 +119,7 @@ const Index = () => {
           onStart={server.startServer}
           onStop={server.stopServer}
           onRestart={server.restartServer}
+          connectAddress={connectAddress}
         />
 
         <ServerStatsBar stats={server.stats} />

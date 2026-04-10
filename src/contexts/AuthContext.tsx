@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { API_URL } from "@/lib/api";
 
 interface AuthContextType {
@@ -6,9 +6,12 @@ interface AuthContextType {
   username: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  canHost: boolean;
+  isAdmin: boolean;
   login: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   changePassword: (oldPassword: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -18,10 +21,46 @@ function clearStoredSession() {
   localStorage.removeItem("mchost_user");
 }
 
+function applyProfilePayload(
+  setCanHost: (v: boolean) => void,
+  setIsAdmin: (v: boolean) => void,
+  data: { canHost?: boolean; isAdmin?: boolean }
+) {
+  if (typeof data.canHost === "boolean") setCanHost(data.canHost);
+  if (typeof data.isAdmin === "boolean") setIsAdmin(data.isAdmin);
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(localStorage.getItem("mchost_token"));
   const [username, setUsername] = useState<string | null>(localStorage.getItem("mchost_user"));
+  const [canHost, setCanHost] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+
+  const refreshProfile = useCallback(async () => {
+    const stored = localStorage.getItem("mchost_token");
+    if (!stored) return;
+    try {
+      const res = await fetch(`${API_URL}/api/auth/validate`, {
+        headers: { Authorization: `Bearer ${stored}` },
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        valid?: boolean;
+        username?: string;
+        canHost?: boolean;
+        isAdmin?: boolean;
+      };
+      if (!data?.valid) return;
+      if (typeof data.username === "string" && data.username) {
+        setUsername(data.username);
+        localStorage.setItem("mchost_user", data.username);
+      }
+      applyProfilePayload(setCanHost, setIsAdmin, data);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   useEffect(() => {
     const stored = localStorage.getItem("mchost_token");
@@ -33,6 +72,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const invalidate = () => {
       setToken(null);
       setUsername(null);
+      setCanHost(false);
+      setIsAdmin(false);
       clearStoredSession();
     };
 
@@ -45,7 +86,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
         try {
-          const data = (await res.json()) as { valid?: boolean; username?: string };
+          const data = (await res.json()) as {
+            valid?: boolean;
+            username?: string;
+            canHost?: boolean;
+            isAdmin?: boolean;
+          };
           if (!data?.valid) {
             invalidate();
             return;
@@ -54,8 +100,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setUsername(data.username);
             localStorage.setItem("mchost_user", data.username);
           }
+          applyProfilePayload(setCanHost, setIsAdmin, data);
         } catch {
-          // 200 com HTML (ex.: SPA / proxy errado) ou corpo inválido — não manter sessão
           invalidate();
         }
       })
@@ -78,6 +124,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUsername(data.username);
         localStorage.setItem("mchost_token", data.token);
         localStorage.setItem("mchost_user", data.username);
+        applyProfilePayload(setCanHost, setIsAdmin, data);
         return { success: true };
       }
       return { success: false, error: data.error || "Erro ao fazer login" };
@@ -89,6 +136,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     setToken(null);
     setUsername(null);
+    setCanHost(false);
+    setIsAdmin(false);
     clearStoredSession();
   };
 
@@ -117,9 +166,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         username,
         isAuthenticated: !!token,
         isLoading: !authChecked,
+        canHost,
+        isAdmin,
         login,
         logout,
         changePassword,
+        refreshProfile,
       }}
     >
       {children}
