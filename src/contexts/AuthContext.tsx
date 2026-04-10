@@ -13,36 +13,56 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+function clearStoredSession() {
+  localStorage.removeItem("mchost_token");
+  localStorage.removeItem("mchost_user");
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(localStorage.getItem("mchost_token"));
   const [username, setUsername] = useState<string | null>(localStorage.getItem("mchost_user"));
-  const [isLoading, setIsLoading] = useState(true);
+  const [authChecked, setAuthChecked] = useState(false);
 
   useEffect(() => {
-    // Validate token on mount
-    if (token) {
-      fetch(`${API_URL}/api/auth/validate`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-        .then((res) => {
-          if (!res.ok) {
-            setToken(null);
-            setUsername(null);
-            localStorage.removeItem("mchost_token");
-            localStorage.removeItem("mchost_user");
-          }
-        })
-        .catch(() => {
-          // Backend unreachable — clear token so login screen shows
-          setToken(null);
-          setUsername(null);
-          localStorage.removeItem("mchost_token");
-          localStorage.removeItem("mchost_user");
-        })
-        .finally(() => setIsLoading(false));
-    } else {
-      setIsLoading(false);
+    const stored = localStorage.getItem("mchost_token");
+    if (!stored) {
+      setAuthChecked(true);
+      return;
     }
+
+    const invalidate = () => {
+      setToken(null);
+      setUsername(null);
+      clearStoredSession();
+    };
+
+    fetch(`${API_URL}/api/auth/validate`, {
+      headers: { Authorization: `Bearer ${stored}` },
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          invalidate();
+          return;
+        }
+        try {
+          const data = (await res.json()) as { valid?: boolean; username?: string };
+          if (!data?.valid) {
+            invalidate();
+            return;
+          }
+          if (typeof data.username === "string" && data.username) {
+            setUsername(data.username);
+            localStorage.setItem("mchost_user", data.username);
+          }
+        } catch {
+          // 200 com HTML (ex.: SPA / proxy errado) ou corpo inválido — não manter sessão
+          invalidate();
+        }
+      })
+      .catch(() => {
+        invalidate();
+      })
+      .finally(() => setAuthChecked(true));
   }, []);
 
   const login = async (user: string, password: string) => {
@@ -69,8 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     setToken(null);
     setUsername(null);
-    localStorage.removeItem("mchost_token");
-    localStorage.removeItem("mchost_user");
+    clearStoredSession();
   };
 
   const changePassword = async (oldPassword: string, newPassword: string) => {
@@ -97,7 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         token,
         username,
         isAuthenticated: !!token,
-        isLoading,
+        isLoading: !authChecked,
         login,
         logout,
         changePassword,
