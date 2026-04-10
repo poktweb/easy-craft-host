@@ -548,6 +548,153 @@ app.put("/api/properties", (req, res) => {
   }
 });
 
+// ===================== ROUTES: SERVER VERSIONS =====================
+const https = require("https");
+const http2 = require("http");
+
+function httpGet(url) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith("https") ? https : http2;
+    mod.get(url, { headers: { "User-Agent": "MCHost/1.0" } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return httpGet(res.headers.location).then(resolve).catch(reject);
+      }
+      let data = "";
+      res.on("data", (chunk) => (data += chunk));
+      res.on("end", () => resolve({ status: res.statusCode, data }));
+    }).on("error", reject);
+  });
+}
+
+function downloadFile(url, dest) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith("https") ? https : http2;
+    mod.get(url, { headers: { "User-Agent": "MCHost/1.0" } }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
+      const file = fs.createWriteStream(dest);
+      res.pipe(file);
+      file.on("finish", () => file.close(resolve));
+      file.on("error", reject);
+    }).on("error", reject);
+  });
+}
+
+// Get current installed server info
+function getCurrentServerInfo() {
+  const infoPath = path.join(SERVER_DIR, ".mchost_server_info.json");
+  if (fs.existsSync(infoPath)) {
+    try { return JSON.parse(fs.readFileSync(infoPath, "utf-8")); } catch (_e) {}
+  }
+  return null;
+}
+
+function saveServerInfo(info) {
+  const infoPath = path.join(SERVER_DIR, ".mchost_server_info.json");
+  fs.writeFileSync(infoPath, JSON.stringify(info, null, 2), "utf-8");
+}
+
+app.get("/api/versions/current", (req, res) => {
+  const info = getCurrentServerInfo();
+  res.json(info || { type: "unknown", version: "unknown" });
+});
+
+// List available versions for a server type
+app.get("/api/versions/:type", async (req, res) => {
+  const { type } = req.params;
+  try {
+    let versions = [];
+    if (type === "paper") {
+      const resp = await httpGet("https://api.papermc.io/v2/projects/paper");
+      const data = JSON.parse(resp.data);
+      versions = data.versions.reverse().slice(0, 20);
+    } else if (type === "purpur") {
+      const resp = await httpGet("https://api.purpurmc.org/v2/purpur");
+      const data = JSON.parse(resp.data);
+      versions = data.versions.reverse().slice(0, 20);
+    } else if (type === "vanilla") {
+      const resp = await httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
+      const data = JSON.parse(resp.data);
+      versions = data.versions
+        .filter((v) => v.type === "release")
+        .slice(0, 20)
+        .map((v) => v.id);
+    } else {
+      return res.status(400).json({ error: "Tipo inválido. Use: paper, purpur, vanilla" });
+    }
+    res.json({ versions });
+  } catch (err) {
+    res.status(500).json({ error: `Erro ao buscar versões: ${err.message}` });
+  }
+});
+
+// Install a specific server version
+let installProgress = null;
+
+app.post("/api/versions/install", async (req, res) => {
+  const { type, version } = req.body;
+  if (!type || !version) return res.status(400).json({ error: "Tipo e versão são obrigatórios" });
+  if (mcProcess) return res.status(400).json({ error: "Pare o servidor antes de trocar a versão" });
+
+  installProgress = { type, version, status: "downloading", progress: 0 };
+  broadcast("install_progress", installProgress);
+
+  try {
+    let downloadUrl = "";
+
+    if (type === "paper") {
+      const buildsResp = await httpGet(`https://api.papermc.io/v2/projects/paper/versions/${version}/builds`);
+      const buildsData = JSON.parse(buildsResp.data);
+      const latestBuild = buildsData.builds[buildsData.builds.length - 1];
+      const fileName = latestBuild.downloads.application.name;
+      downloadUrl = `https://api.papermc.io/v2/projects/paper/versions/${version}/builds/${latestBuild.build}/downloads/${fileName}`;
+    } else if (type === "purpur") {
+      downloadUrl = `https://api.purpurmc.org/v2/purpur/${version}/latest/download`;
+    } else if (type === "vanilla") {
+      const manifestResp = await httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
+      const manifest = JSON.parse(manifestResp.data);
+      const versionInfo = manifest.versions.find((v) => v.id === version);
+      if (!versionInfo) throw new Error("Versão não encontrada");
+      const versionResp = await httpGet(versionInfo.url);
+      const versionData = JSON.parse(versionResp.data);
+      downloadUrl = versionData.downloads.server.url;
+    }
+
+    installProgress.status = "downloading";
+    broadcast("install_progress", installProgress);
+    addLog("INFO", `Baixando ${type} ${version}...`);
+
+    // Delete old server.jar
+    const jarPath = path.join(SERVER_DIR, JAR_FILE);
+    if (fs.existsSync(jarPath)) {
+      fs.unlinkSync(jarPath);
+      addLog("INFO", "server.jar antigo removido.");
+    }
+
+    ensureDir(SERVER_DIR);
+    await downloadFile(downloadUrl, jarPath);
+
+    saveServerInfo({ type, version, installedAt: new Date().toISOString() });
+
+    installProgress = { type, version, status: "done", progress: 100 };
+    broadcast("install_progress", installProgress);
+    addLog("INFO", `${type} ${version} instalado com sucesso!`);
+
+    res.json({ success: true });
+  } catch (err) {
+    installProgress = { type, version, status: "error", error: err.message };
+    broadcast("install_progress", installProgress);
+    addLog("ERROR", `Erro ao instalar ${type} ${version}: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/versions/install/progress", (req, res) => {
+  res.json(installProgress || { status: "idle" });
+});
+
 // ===================== HELPERS =====================
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;

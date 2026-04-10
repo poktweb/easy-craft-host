@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Terminal, FolderOpen, Settings2, Archive, Wrench, Wifi, WifiOff, LogOut, Shield } from "lucide-react";
+import { Terminal, FolderOpen, Settings2, Archive, Wrench, Wifi, WifiOff, LogOut, Shield, Box } from "lucide-react";
 import { useServerState } from "@/hooks/useServerState";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import FileManager from "@/components/FileManager";
 import ServerProperties from "@/components/ServerProperties";
 import ServerBackups from "@/components/ServerBackups";
 import ServerSettings from "@/components/ServerSettings";
+import ServerVersions from "@/components/ServerVersions";
 
 const Index = () => {
   const server = useServerState();
@@ -66,6 +67,7 @@ const Index = () => {
               { value: "files", label: "Arquivos", icon: FolderOpen },
               { value: "properties", label: "Propriedades", icon: Settings2 },
               { value: "backups", label: "Backups", icon: Archive },
+              { value: "versions", label: "Versões", icon: Box },
               { value: "settings", label: "Configurações", icon: Wrench },
             ].map(({ value, label, icon: Icon }) => (
               <TabsTrigger
@@ -91,6 +93,9 @@ const Index = () => {
             </TabsContent>
             <TabsContent value="backups" className="m-0">
               <ServerBackups />
+            </TabsContent>
+            <TabsContent value="versions" className="m-0">
+              <ServerVersions />
             </TabsContent>
             <TabsContent value="settings" className="m-0">
               <ServerSettings />
