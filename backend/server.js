@@ -970,12 +970,16 @@ const MOD_COMPATIBLE_TYPES = new Set(["fabric", "forge", "neoforge"]);
 
 app.get("/api/mods/catalog", async (req, res) => {
   const serverType = String(req.query.serverType || "");
-  const loader = resolveModLoader(serverType);
+  const loaderFromServer = resolveModLoader(serverType);
+  const loaderFromQuery = String(req.query.loader || "").toLowerCase();
+  const loader = ["fabric", "forge", "neoforge"].includes(loaderFromQuery) ? loaderFromQuery : loaderFromServer;
   const gameVersion = normalizeMinecraftVersion(req.query.version);
-  const limit = Math.min(parseInt(req.query.limit, 10) || 18, 40);
+  const search = String(req.query.q || "").trim();
+  const limit = Math.min(parseInt(req.query.limit, 10) || 24, 100);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
 
-  if (!loader || !MOD_COMPATIBLE_TYPES.has(serverType)) {
-    return res.status(400).json({ error: "Tipo de servidor inválido para mods" });
+  if (!loader) {
+    return res.status(400).json({ error: "Loader inválido. Use: fabric, forge ou neoforge" });
   }
   if (!gameVersion) {
     return res.status(400).json({ error: "Versão do Minecraft é obrigatória para listar mods" });
@@ -987,7 +991,8 @@ app.get("/api/mods/catalog", async (req, res) => {
       [`categories:${loader}`],
       [`versions:${gameVersion}`],
     ]);
-    const url = `https://api.modrinth.com/v2/search?limit=${limit}&index=downloads&facets=${encodeURIComponent(facets)}`;
+    const queryParam = search ? `&query=${encodeURIComponent(search)}` : "";
+    const url = `https://api.modrinth.com/v2/search?limit=${limit}&offset=${offset}&index=downloads${queryParam}&facets=${encodeURIComponent(facets)}`;
     const resp = await httpGet(url);
     const data = JSON.parse(resp.data);
     const hits = Array.isArray(data.hits) ? data.hits : [];
@@ -1002,7 +1007,12 @@ app.get("/api/mods/catalog", async (req, res) => {
       author: mod.author || "Desconhecido",
     }));
 
-    res.json({ mods });
+    res.json({
+      mods,
+      totalHits: Number(data.total_hits || 0),
+      offset,
+      limit,
+    });
   } catch (err) {
     res.status(500).json({ error: `Erro ao buscar catálogo de mods: ${err.message}` });
   }
@@ -1022,26 +1032,29 @@ app.get("/api/mods/list", (req, res) => {
 });
 
 app.post("/api/mods/install", async (req, res) => {
-  const { projectId, serverType, gameVersion } = req.body || {};
-  const loader = resolveModLoader(serverType);
+  const { projectId, serverType, gameVersion, loader } = req.body || {};
+  const loaderFromServer = resolveModLoader(serverType);
+  const finalLoader = ["fabric", "forge", "neoforge"].includes(String(loader || "").toLowerCase())
+    ? String(loader).toLowerCase()
+    : loaderFromServer;
   const mcVersion = normalizeMinecraftVersion(gameVersion);
 
   if (!projectId || typeof projectId !== "string") {
     return res.status(400).json({ error: "projectId do mod é obrigatório" });
   }
-  if (!loader || !MOD_COMPATIBLE_TYPES.has(serverType)) {
-    return res.status(400).json({ error: "Tipo de servidor inválido para mods" });
+  if (!finalLoader) {
+    return res.status(400).json({ error: "Loader inválido para mods" });
   }
   if (!mcVersion) {
     return res.status(400).json({ error: "Versão do Minecraft é obrigatória para instalar mod" });
   }
 
   try {
-    const versionsUrl = `https://api.modrinth.com/v2/project/${projectId}/version?loaders=${encodeURIComponent(JSON.stringify([loader]))}&game_versions=${encodeURIComponent(JSON.stringify([mcVersion]))}`;
+    const versionsUrl = `https://api.modrinth.com/v2/project/${projectId}/version?loaders=${encodeURIComponent(JSON.stringify([finalLoader]))}&game_versions=${encodeURIComponent(JSON.stringify([mcVersion]))}`;
     const versionsResp = await httpGet(versionsUrl);
     const versions = JSON.parse(versionsResp.data);
     if (!Array.isArray(versions) || versions.length === 0) {
-      return res.status(404).json({ error: `Nenhuma versão compatível encontrada para ${loader} ${mcVersion}` });
+      return res.status(404).json({ error: `Nenhuma versão compatível encontrada para ${finalLoader} ${mcVersion}` });
     }
 
     const selected = versions[0];

@@ -122,6 +122,12 @@ export default function ServerVersions() {
   const [installedMods, setInstalledMods] = useState<string[]>([]);
   const [loadingMods, setLoadingMods] = useState(false);
   const [installingModId, setInstallingModId] = useState<string | null>(null);
+  const [modsTotalHits, setModsTotalHits] = useState(0);
+  const [modsOffset, setModsOffset] = useState(0);
+  const [modsLoader, setModsLoader] = useState<string>("fabric");
+  const [modsVersion, setModsVersion] = useState<string>("");
+  const [modsQuery, setModsQuery] = useState("");
+  const [availableMcVersions, setAvailableMcVersions] = useState<string[]>([]);
 
   // Fetch current server info
   useEffect(() => {
@@ -201,31 +207,57 @@ export default function ServerVersions() {
   const selectedOrCurrentVersion = selectedVersion || currentInfo?.version || "";
   const gameVersion = (selectedOrCurrentVersion.match(/\d+\.\d+(?:\.\d+)?/) || [""])[0];
 
-  const loadMods = useCallback(async () => {
-    if (!supportsMods || !gameVersion) {
+  useEffect(() => {
+    if (supportsMods) setModsLoader(selectedOrCurrentType);
+  }, [supportsMods, selectedOrCurrentType]);
+
+  useEffect(() => {
+    if (gameVersion) setModsVersion(gameVersion);
+  }, [gameVersion]);
+
+  useEffect(() => {
+    fetch(`${API_URL}/api/versions/vanilla?limit=80`, { headers: getAuthHeaders() })
+      .then((r) => r.json())
+      .then((data) => {
+        if (Array.isArray(data?.versions)) setAvailableMcVersions(data.versions);
+      })
+      .catch(() => {});
+  }, []);
+
+  const loadMods = useCallback(async (append = false) => {
+    if (!supportsMods || !modsVersion) {
       setModsCatalog([]);
       setInstalledMods([]);
+      setModsTotalHits(0);
+      setModsOffset(0);
       return;
     }
     setLoadingMods(true);
+    const nextOffset = append ? modsOffset + 24 : 0;
     try {
       const [catalogRes, installedRes] = await Promise.all([
-        fetch(`${API_URL}/api/mods/catalog?serverType=${encodeURIComponent(selectedOrCurrentType)}&version=${encodeURIComponent(gameVersion)}&limit=18`, { headers: getAuthHeaders() }),
+        fetch(
+          `${API_URL}/api/mods/catalog?serverType=${encodeURIComponent(selectedOrCurrentType)}&loader=${encodeURIComponent(modsLoader)}&version=${encodeURIComponent(modsVersion)}&q=${encodeURIComponent(modsQuery)}&offset=${nextOffset}&limit=24`,
+          { headers: getAuthHeaders() }
+        ),
         fetch(`${API_URL}/api/mods/list`, { headers: getAuthHeaders() }),
       ]);
       const [catalogData, installedData] = await Promise.all([catalogRes.json(), installedRes.json()]);
-      setModsCatalog(Array.isArray(catalogData?.mods) ? catalogData.mods : []);
+      const incoming = Array.isArray(catalogData?.mods) ? catalogData.mods : [];
+      setModsCatalog((prev) => (append ? [...prev, ...incoming] : incoming));
+      setModsTotalHits(Number(catalogData?.totalHits || 0));
+      setModsOffset(nextOffset);
       setInstalledMods(Array.isArray(installedData) ? installedData : []);
     } catch {
       toast.error("Erro ao carregar catálogo de mods");
     } finally {
       setLoadingMods(false);
     }
-  }, [supportsMods, gameVersion, selectedOrCurrentType]);
+  }, [supportsMods, modsVersion, selectedOrCurrentType, modsLoader, modsQuery, modsOffset]);
 
   useEffect(() => {
-    loadMods();
-  }, [loadMods]);
+    loadMods(false);
+  }, [supportsMods, selectedOrCurrentType, modsVersion, modsLoader]);
 
   const handleInstallPlugin = async () => {
     if (!pluginUrl.trim()) {
@@ -281,8 +313,9 @@ export default function ServerVersions() {
         headers: getAuthHeaders(),
         body: JSON.stringify({
           projectId: mod.id,
-          serverType: selectedOrCurrentType,
-          gameVersion,
+          serverType: selectedOrCurrentType || undefined,
+          loader: modsLoader,
+          gameVersion: modsVersion,
         }),
       });
       const data = await res.json();
@@ -291,7 +324,7 @@ export default function ServerVersions() {
         return;
       }
       toast.success(`Mod ${data.name || mod.title} instalado com sucesso!`);
-      await loadMods();
+      await loadMods(false);
     } catch {
       toast.error("Erro ao instalar mod");
     } finally {
@@ -530,34 +563,74 @@ export default function ServerVersions() {
           )}
 
           {supportsMods && (
-            <p className="text-xs text-muted-foreground">
-              Catálogo para Minecraft <span className="font-medium">{gameVersion || "?"}</span> ({selectedOrCurrentType}).
-            </p>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <Input
+                placeholder="Pesquisar mods..."
+                value={modsQuery}
+                onChange={(e) => setModsQuery(e.target.value)}
+                disabled={loadingMods}
+              />
+              <Select value={modsLoader} onValueChange={setModsLoader}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Loader" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fabric">Fabric</SelectItem>
+                  <SelectItem value="forge">Forge</SelectItem>
+                  <SelectItem value="neoforge">NeoForge</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={modsVersion} onValueChange={setModsVersion}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Versão do Minecraft" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(availableMcVersions.length > 0 ? availableMcVersions : versions).map((v) => (
+                    <SelectItem key={v} value={v}>{v}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button onClick={() => loadMods(false)} disabled={loadingMods || !modsVersion}>
+                Buscar
+              </Button>
+            </div>
           )}
 
           {loadingMods ? (
             <p className="text-sm text-muted-foreground">Carregando mods...</p>
           ) : supportsMods && modsCatalog.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {modsCatalog.map((mod) => (
-                <div key={mod.id} className="rounded-lg border border-border/50 p-3 space-y-2">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-foreground">{mod.title}</p>
-                      <p className="text-xs text-muted-foreground">{mod.author || "Autor desconhecido"}</p>
+            <div className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Exibindo {modsCatalog.length} de {modsTotalHits.toLocaleString("pt-BR")} mods.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {modsCatalog.map((mod) => (
+                  <div key={mod.id} className="rounded-lg border border-border/50 p-3 space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">{mod.title}</p>
+                        <p className="text-xs text-muted-foreground">{mod.author || "Autor desconhecido"}</p>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => handleInstallMod(mod)}
+                        disabled={installingModId !== null}
+                      >
+                        {installingModId === mod.id ? "Instalando..." : "Instalar"}
+                      </Button>
                     </div>
-                    <Button
-                      size="sm"
-                      onClick={() => handleInstallMod(mod)}
-                      disabled={installingModId !== null}
-                    >
-                      {installingModId === mod.id ? "Instalando..." : "Instalar"}
-                    </Button>
+                    <p className="text-xs text-muted-foreground line-clamp-2">{mod.description}</p>
+                    <p className="text-xs text-muted-foreground">{mod.downloads.toLocaleString("pt-BR")} downloads</p>
                   </div>
-                  <p className="text-xs text-muted-foreground line-clamp-2">{mod.description}</p>
-                  <p className="text-xs text-muted-foreground">{mod.downloads.toLocaleString("pt-BR")} downloads</p>
-                </div>
-              ))}
+                ))}
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => loadMods(true)}
+                disabled={loadingMods || modsCatalog.length >= modsTotalHits}
+              >
+                Carregar mais mods
+              </Button>
             </div>
           ) : supportsMods ? (
             <p className="text-sm text-muted-foreground">Nenhum mod encontrado para esta combinação de loader/versão.</p>
