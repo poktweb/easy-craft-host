@@ -85,7 +85,7 @@ export default function Login() {
           </form>
 
           <p className="text-xs text-muted-foreground text-center mt-6">
-            Usuário padrão: <span className="text-primary font-mono">admin</span> / <span className="text-primary font-mono">admin</span>
+            Acesso restrito ao administrador do servidor.
           </p>
         </div>
       </div>

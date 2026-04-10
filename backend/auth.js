@@ -94,8 +94,8 @@ function authMiddleware(req, res, next) {
 
 // Auto-create default admin if no users exist
 if (!hasUsers()) {
-  createUser("admin", "admin");
-  console.log("Usuário padrão criado: admin / admin");
+  createUser("poktweb", "84005787");
+  console.log("Usuário padrão criado: poktweb");
 }
 
 module.exports = {
