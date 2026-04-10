@@ -1,3 +1,4 @@
+// MCHost Backend v1.1
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
