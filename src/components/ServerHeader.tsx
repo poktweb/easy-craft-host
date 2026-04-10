@@ -1,6 +1,8 @@
+import { useEffect, useMemo, useState } from "react";
 import { Power, RefreshCw, Play, Copy, Server } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ServerStatus, ServerStats } from "@/hooks/useServerState";
+import { apiGetProperties } from "@/lib/api";
 import { toast } from "sonner";
 
 interface Props {
@@ -21,7 +23,21 @@ function formatUptime(seconds: number): string {
 export default function ServerHeader({ status, stats, onStart, onStop, onRestart }: Props) {
   const isRunning = status === "running";
   const isLoading = status === "starting" || status === "stopping";
-  const ip = "enx-ext-7.enx.host:10102";
+  const [serverProps, setServerProps] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    apiGetProperties()
+      .then((props) => setServerProps(props || {}))
+      .catch(() => {
+        // Keep fallback values when properties cannot be loaded.
+      });
+  }, []);
+
+  const ip = useMemo(() => {
+    const serverIp = (serverProps["server-ip"] || "").trim();
+    const serverPort = (serverProps["server-port"] || "25565").trim();
+    return `${serverIp || "0.0.0.0"}:${serverPort || "25565"}`;
+  }, [serverProps]);
 
   return (
     <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
