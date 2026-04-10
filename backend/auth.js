@@ -17,7 +17,7 @@ const TOKEN_EXPIRY = "24h";
 /** Login fixo de administrador (pode sobrescrever com MC_ADMIN_USER). Só este usuário acessa o painel de liberação. */
 const ADMIN_USERNAME = String(process.env.MC_ADMIN_USER || "poktweb").toLowerCase();
 
-/** @type {{ users: Array<{ id: number; username: string; password_hash: string; salt: string; canHost?: boolean }>; nextId: number }} */
+/** @type {{ users: Array<{ id: number; username: string; password_hash: string; salt: string; canHost?: boolean; quotaMaxRamMb?: number; quotaMaxInstances?: number }>; nextId: number }} */
 let state = { users: [], nextId: 1 };
 
 function loadState() {
@@ -119,7 +119,8 @@ function verifyUser(username, password) {
 }
 
 function getUserById(userId) {
-  return state.users.find((u) => u.id === userId) || null;
+  const id = Number(userId);
+  return state.users.find((u) => Number(u.id) === id) || null;
 }
 
 function authProfileForUserId(userId) {
@@ -139,7 +140,52 @@ function listUsersForAdmin() {
     username: u.username,
     canHost: u.canHost === true || isAdminUsername(u.username),
     isAdmin: isAdminUsername(u.username),
+    quotaMaxRamMb: u.quotaMaxRamMb != null && Number.isFinite(Number(u.quotaMaxRamMb)) ? Number(u.quotaMaxRamMb) : null,
+    quotaMaxInstances: u.quotaMaxInstances != null && Number.isFinite(Number(u.quotaMaxInstances)) ? Number(u.quotaMaxInstances) : null,
   }));
+}
+
+/**
+ * @param {number} actorUserId
+ * @param {number} targetUserId
+ * @param {{ quotaMaxRamMb?: number | null; quotaMaxInstances?: number | null }} patch — use `null` para voltar ao padrão do sistema
+ */
+function setUserQuotas(actorUserId, targetUserId, patch) {
+  const actor = getUserById(actorUserId);
+  if (!actor || !isAdminUsername(actor.username)) {
+    return { error: "Apenas o administrador pode alterar cotas" };
+  }
+  const target = getUserById(targetUserId);
+  if (!target) return { error: "Usuário não encontrado" };
+  if (isAdminUsername(target.username)) {
+    return { error: "Cotas não se aplicam à conta de administrador" };
+  }
+  if (patch.quotaMaxRamMb !== undefined) {
+    if (patch.quotaMaxRamMb === null) {
+      delete target.quotaMaxRamMb;
+    } else {
+      const n = parseInt(String(patch.quotaMaxRamMb), 10);
+      if (!Number.isFinite(n) || n < 256) return { error: "RAM máxima por instância: mínimo 256 MB" };
+      if (n > 262144) return { error: "RAM máxima por instância muito alta (máx. 262144 MB)" };
+      target.quotaMaxRamMb = n;
+    }
+  }
+  if (patch.quotaMaxInstances !== undefined) {
+    if (patch.quotaMaxInstances === null) {
+      delete target.quotaMaxInstances;
+    } else {
+      const n = parseInt(String(patch.quotaMaxInstances), 10);
+      if (!Number.isFinite(n) || n < 1) return { error: "Quantidade de instâncias: mínimo 1" };
+      if (n > 999) return { error: "No máximo 999 instâncias por usuário" };
+      target.quotaMaxInstances = n;
+    }
+  }
+  try {
+    saveState();
+    return { success: true };
+  } catch (err) {
+    return { error: err.message };
+  }
 }
 
 function setUserCanHost(actorUserId, targetUserId, canHost) {
@@ -231,6 +277,8 @@ module.exports = {
   userCanCreateInstances,
   isAdminUsername,
   getAdminUserId,
+  getUserById,
   listUsersForAdmin,
   setUserCanHost,
+  setUserQuotas,
 };

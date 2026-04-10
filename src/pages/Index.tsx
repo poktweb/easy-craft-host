@@ -34,9 +34,10 @@ const Index = () => {
     let cancelled = false;
     setPanelReady(false);
     apiListInstances()
-      .then((list) => {
+      .then((data) => {
         if (cancelled) return;
-        if (!Array.isArray(list) || !list.some((x) => x.id === instanceId)) {
+        const list = data.instances;
+        if (!list.some((x) => x.id === instanceId)) {
           navigate("/", { replace: true });
           return;
         }

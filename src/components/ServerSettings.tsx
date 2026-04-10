@@ -12,6 +12,7 @@ export default function ServerSettings() {
   const { instanceId = "default" } = useParams<{ instanceId: string }>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [ramQuotaMb, setRamQuotaMb] = useState<number | null>(null);
   const [settings, setSettings] = useState({
     javaVersion: "17",
     minRamMb: 512,
@@ -34,6 +35,7 @@ export default function ServerSettings() {
         toast.error(data.error);
         return;
       }
+      setRamQuotaMb(typeof data.ramQuotaMb === "number" && Number.isFinite(data.ramQuotaMb) ? data.ramQuotaMb : null);
       setSettings((prev) => ({
         ...prev,
         javaVersion: String(data.javaVersion ?? prev.javaVersion),
@@ -78,8 +80,24 @@ export default function ServerSettings() {
         toast.error(res.error);
         return;
       }
-      if (res.settings) {
-        setSettings((prev) => ({ ...prev, ...res.settings }));
+      if (typeof res.ramQuotaMb === "number" && Number.isFinite(res.ramQuotaMb)) {
+        setRamQuotaMb(res.ramQuotaMb);
+      }
+      if (res.settings && typeof res.settings === "object") {
+        const s = res.settings as Record<string, unknown>;
+        setSettings((prev) => ({
+          ...prev,
+          javaVersion: String(s.javaVersion ?? prev.javaVersion),
+          minRamMb: Number(s.minRamMb) || prev.minRamMb,
+          maxRamMb: Number(s.maxRamMb) || prev.maxRamMb,
+          javaPath: String(s.javaPath ?? prev.javaPath),
+          jarFile: String(s.jarFile ?? prev.jarFile),
+          extraFlags: String(s.extraFlags ?? prev.extraFlags),
+          autoRestart: typeof s.autoRestart === "boolean" ? s.autoRestart : prev.autoRestart,
+          crashDetection: typeof s.crashDetection === "boolean" ? s.crashDetection : prev.crashDetection,
+          autoBackup: typeof s.autoBackup === "boolean" ? s.autoBackup : prev.autoBackup,
+          backupIntervalHours: Number(s.backupIntervalHours) || prev.backupIntervalHours,
+        }));
       }
       toast.success("Configurações salvas no servidor. Reinicie o Minecraft para aplicar RAM/Java.");
     } catch {
@@ -97,6 +115,12 @@ export default function ServerSettings() {
     <div className="max-w-2xl space-y-6">
       <p className="text-sm text-muted-foreground">
         A RAM máxima abaixo é aplicada ao iniciar o processo Java (-Xmx). Para uma VPS de 8 GB, valores típicos são 6144–7168 MB para o jogo, deixando memória para o sistema.
+        {ramQuotaMb != null ? (
+          <>
+            {" "}
+            Sua conta pode usar no máximo <span className="font-medium text-foreground">{ramQuotaMb} MB</span> por instância (definido pelo administrador).
+          </>
+        ) : null}
       </p>
 
       <div className="space-y-2">
@@ -120,6 +144,7 @@ export default function ServerSettings() {
           <Input
             type="number"
             min={256}
+            max={ramQuotaMb ?? undefined}
             value={settings.minRamMb}
             onChange={(e) => setSettings((s) => ({ ...s, minRamMb: parseInt(e.target.value, 10) || 256 }))}
           />
@@ -129,6 +154,7 @@ export default function ServerSettings() {
           <Input
             type="number"
             min={256}
+            max={ramQuotaMb ?? undefined}
             value={settings.maxRamMb}
             onChange={(e) => setSettings((s) => ({ ...s, maxRamMb: parseInt(e.target.value, 10) || 256 }))}
           />

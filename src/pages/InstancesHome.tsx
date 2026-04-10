@@ -2,26 +2,18 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Plus, Server, ArrowRight, LogOut, Shield, Users, AlertCircle, Copy } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { apiCreateInstance, apiListInstances } from "@/lib/api";
+import { apiCreateInstance, apiListInstances, type HostingQuotaInfo, type InstanceSummary } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "sonner";
 
-export interface InstanceSummary {
-  id: string;
-  name: string;
-  mode?: string;
-  status?: string;
-  serverPort?: number;
-  connectAddress?: string;
-}
-
 export default function InstancesHome() {
   const navigate = useNavigate();
   const { username, logout, canHost, isAdmin, refreshProfile } = useAuth();
   const [instances, setInstances] = useState<InstanceSummary[]>([]);
+  const [hosting, setHosting] = useState<HostingQuotaInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -29,12 +21,13 @@ export default function InstancesHome() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await apiListInstances();
-      if (Array.isArray(list)) setInstances(list);
-      else setInstances([]);
+      const data = await apiListInstances();
+      setInstances(data.instances);
+      setHosting(data.hosting ?? null);
     } catch {
       toast.error("Não foi possível carregar as instâncias");
       setInstances([]);
+      setHosting(null);
     } finally {
       setLoading(false);
     }
@@ -126,6 +119,16 @@ export default function InstancesHome() {
           </Alert>
         )}
 
+        {canHost && hosting && (
+          <p className="text-sm text-muted-foreground max-w-xl">
+            Cota: até <span className="font-medium text-foreground">{hosting.maxRamMbPerInstance} MB</span> de RAM por instância ·{" "}
+            <span className="font-medium text-foreground">
+              {hosting.instanceCount}/{hosting.maxInstances}
+            </span>{" "}
+            instâncias
+          </p>
+        )}
+
         <div className="flex flex-wrap gap-3 items-end max-w-xl">
           <div className="flex-1 min-w-[200px] space-y-2">
             <label className="text-sm font-medium text-foreground">Nova instância</label>
@@ -136,7 +139,22 @@ export default function InstancesHome() {
               disabled={!canHost}
             />
           </div>
-          <Button onClick={handleCreate} disabled={creating || !canHost} className="gap-2" title={!canHost ? "Aguardando liberação do administrador" : undefined}>
+          <Button
+            onClick={handleCreate}
+            disabled={
+              creating ||
+              !canHost ||
+              !!(hosting && hosting.instanceCount >= hosting.maxInstances)
+            }
+            className="gap-2"
+            title={
+              !canHost
+                ? "Aguardando liberação do administrador"
+                : hosting && hosting.instanceCount >= hosting.maxInstances
+                  ? "Limite de instâncias atingido"
+                  : undefined
+            }
+          >
             <Plus className="h-4 w-4" />
             {creating ? "Criando…" : "Criar"}
           </Button>

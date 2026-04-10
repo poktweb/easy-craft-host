@@ -173,9 +173,36 @@ export async function apiSaveProperties(props: Record<string, string>) {
 }
 
 // ===================== INSTANCES & JVM SETTINGS =====================
-export async function apiListInstances() {
+export interface InstanceSummary {
+  id: string;
+  name: string;
+  mode?: string;
+  status?: string;
+  serverPort?: number;
+  connectAddress?: string;
+}
+
+export interface HostingQuotaInfo {
+  instanceCount: number;
+  maxInstances: number;
+  maxRamMbPerInstance: number;
+}
+
+export interface InstancesListResponse {
+  instances: InstanceSummary[];
+  hosting?: HostingQuotaInfo;
+}
+
+export async function apiListInstances(): Promise<InstancesListResponse> {
   const res = await authFetch(`${API_URL}/api/instances`);
-  return res.json();
+  const data = await res.json();
+  if (Array.isArray(data)) {
+    return { instances: data as InstanceSummary[], hosting: undefined };
+  }
+  return {
+    instances: Array.isArray(data.instances) ? data.instances : [],
+    hosting: data.hosting,
+  };
 }
 
 export async function apiCreateInstance(name: string) {
@@ -191,6 +218,11 @@ export interface AdminUserRow {
   username: string;
   canHost: boolean;
   isAdmin: boolean;
+  quotaMaxRamMb?: number | null;
+  quotaMaxInstances?: number | null;
+  instanceCount?: number;
+  effectiveMaxRamMb?: number;
+  effectiveMaxInstances?: number;
 }
 
 export async function apiAdminListUsers(): Promise<AdminUserRow[]> {
@@ -204,6 +236,17 @@ export async function apiAdminSetCanHost(userId: number, canHost: boolean): Prom
   const res = await authFetch(`${API_URL}/api/admin/users/${userId}/can-host`, {
     method: "PATCH",
     body: JSON.stringify({ canHost }),
+  });
+  return res.json();
+}
+
+export async function apiAdminSetUserQuota(
+  userId: number,
+  body: { quotaMaxRamMb?: number | null; quotaMaxInstances?: number | null },
+): Promise<{ success?: boolean; error?: string }> {
+  const res = await authFetch(`${API_URL}/api/admin/users/${userId}/quota`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
   });
   return res.json();
 }

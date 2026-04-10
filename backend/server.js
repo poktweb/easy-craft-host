@@ -19,8 +19,10 @@ const {
   userCanCreateInstances,
   isAdminUsername,
   getAdminUserId,
+  getUserById,
   listUsersForAdmin,
   setUserCanHost,
+  setUserQuotas,
   registerUser,
 } = require("./auth");
 
@@ -37,6 +39,8 @@ const MAX_PLAYERS = parseInt(process.env.MC_MAX_PLAYERS || "20");
 const MAX_CPU = parseInt(process.env.MC_MAX_CPU || "200");
 const MAX_STORAGE = process.env.MC_MAX_STORAGE || "10 GB";
 const MAX_RAM_DISPLAY = process.env.MC_MAX_RAM_DISPLAY || MAX_RAM.replace("M", " MB").replace("G", " GB");
+/** Máximo de instâncias por usuário quando o admin não definiu cota própria. */
+const DEFAULT_USER_MAX_INSTANCES = Math.max(1, parseInt(process.env.MC_USER_DEFAULT_MAX_INSTANCES || "5", 10));
 
 const INSTANCES_STORE = path.join(__dirname, "instances.json");
 const INSTANCES_DATA_DIR = path.join(__dirname, "data_instances");
@@ -184,6 +188,29 @@ function parseRamEnvToMb(value) {
   return u === "G" ? n * 1024 : n;
 }
 
+/** RAM máxima por instância (MB): cota do usuário ou padrão do servidor (MC_MAX_RAM). Administrador sem limite prático. */
+function resolveUserRamCapMb(userId) {
+  const u = getUserById(userId);
+  if (u && isAdminUsername(u.username)) return 262144;
+  const envCap = parseRamEnvToMb(MAX_RAM);
+  if (!u) return envCap;
+  if (u.quotaMaxRamMb != null && Number.isFinite(Number(u.quotaMaxRamMb)) && Number(u.quotaMaxRamMb) >= 256) {
+    return Math.floor(Number(u.quotaMaxRamMb));
+  }
+  return envCap;
+}
+
+/** Quantidade máxima de instâncias: cota do usuário ou MC_USER_DEFAULT_MAX_INSTANCES. Administrador: 999. */
+function resolveUserMaxInstances(userId) {
+  const u = getUserById(userId);
+  if (u && isAdminUsername(u.username)) return 999;
+  if (!u) return DEFAULT_USER_MAX_INSTANCES;
+  if (u.quotaMaxInstances != null && Number.isFinite(Number(u.quotaMaxInstances)) && Number(u.quotaMaxInstances) >= 1) {
+    return Math.floor(Number(u.quotaMaxInstances));
+  }
+  return DEFAULT_USER_MAX_INSTANCES;
+}
+
 function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
@@ -275,23 +302,48 @@ function getDefaultJvmSettings() {
   };
 }
 
-function readJvmSettings(instanceDir) {
+/** Mescla disco + padrões globais, sem aplicar cota por usuário. */
+function mergeJvmFromDisk(instanceDir) {
   const settingsPath = path.join(instanceDir, SETTINGS_FILENAME);
   const base = getDefaultJvmSettings();
-  if (!fs.existsSync(settingsPath)) return base;
+  if (!fs.existsSync(settingsPath)) return { ...base };
   try {
     const saved = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
     return { ...base, ...saved };
   } catch (_e) {
-    return base;
+    return { ...base };
   }
 }
 
-function writeJvmSettings(instanceDir, partial) {
-  const cur = readJvmSettings(instanceDir);
-  const next = { ...cur, ...partial };
-  fs.writeFileSync(path.join(instanceDir, SETTINGS_FILENAME), JSON.stringify(next, null, 2), "utf-8");
-  return next;
+function clampJvmToUserRamCap(merged, ownerUserId) {
+  if (ownerUserId == null || !Number.isFinite(Number(ownerUserId))) return merged;
+  const cap = resolveUserRamCapMb(ownerUserId);
+  const maxRam = Math.min(Math.max(256, Number(merged.maxRamMb) || 256), cap);
+  const minRam = Math.min(Math.max(256, Number(merged.minRamMb) || 256), maxRam);
+  return { ...merged, minRamMb: minRam, maxRamMb: maxRam };
+}
+
+/** JVM efetiva para o dono da instância (RAM respeita cota). */
+function readJvmSettings(instanceDir, ownerUserId) {
+  return clampJvmToUserRamCap(mergeJvmFromDisk(instanceDir), ownerUserId);
+}
+
+/** Valores padrão ao criar pasta nova: RAM limitada à cota (ex.: 4 GB → padrão até 4 GB). */
+function getDefaultJvmSettingsForNewUser(ownerUserId) {
+  const cap = resolveUserRamCapMb(ownerUserId);
+  const envMax = parseRamEnvToMb(MAX_RAM);
+  const envMin = parseRamEnvToMb(MIN_RAM);
+  const maxRam = Math.min(envMax, cap);
+  const minRam = Math.min(Math.max(256, envMin), maxRam);
+  return { ...getDefaultJvmSettings(), minRamMb: minRam, maxRamMb: maxRam };
+}
+
+function writeJvmSettings(instanceDir, partial, ownerUserId) {
+  const fromDisk = mergeJvmFromDisk(instanceDir);
+  const next = { ...fromDisk, ...partial };
+  const clamped = clampJvmToUserRamCap(next, ownerUserId);
+  fs.writeFileSync(path.join(instanceDir, SETTINGS_FILENAME), JSON.stringify(clamped, null, 2), "utf-8");
+  return clamped;
 }
 
 function formatMaxRamDisplayFromMb(mb) {
@@ -379,7 +431,21 @@ app.get("/api/admin/users", (req, res) => {
   if (!isAdminUsername(req.user.username)) {
     return res.status(403).json({ error: "Acesso restrito ao administrador" });
   }
-  res.json(listUsersForAdmin());
+  try {
+    const reg = loadInstancesRegistry();
+    const rows = listUsersForAdmin().map((u) => {
+      const instanceCount = reg.instances.filter((i) => Number(i.ownerUserId) === Number(u.id)).length;
+      return {
+        ...u,
+        instanceCount,
+        effectiveMaxRamMb: resolveUserRamCapMb(u.id),
+        effectiveMaxInstances: resolveUserMaxInstances(u.id),
+      };
+    });
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.patch("/api/admin/users/:id/can-host", (req, res) => {
@@ -391,6 +457,24 @@ app.patch("/api/admin/users/:id/can-host", (req, res) => {
   const want = req.body?.canHost;
   if (typeof want !== "boolean") return res.status(400).json({ error: "Envie canHost: true ou false" });
   const result = setUserCanHost(req.user.id, targetId, want);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json({ success: true });
+});
+
+app.patch("/api/admin/users/:id/quota", (req, res) => {
+  if (!isAdminUsername(req.user.username)) {
+    return res.status(403).json({ error: "Acesso restrito ao administrador" });
+  }
+  const targetId = parseInt(req.params.id, 10);
+  if (!Number.isFinite(targetId)) return res.status(400).json({ error: "ID inválido" });
+  const body = req.body || {};
+  const patch = {};
+  if ("quotaMaxRamMb" in body) patch.quotaMaxRamMb = body.quotaMaxRamMb;
+  if ("quotaMaxInstances" in body) patch.quotaMaxInstances = body.quotaMaxInstances;
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ error: "Envie quotaMaxRamMb e/ou quotaMaxInstances (número ou null para padrão)" });
+  }
+  const result = setUserQuotas(req.user.id, targetId, patch);
   if (result.error) return res.status(400).json({ error: result.error });
   res.json({ success: true });
 });
@@ -505,7 +589,9 @@ function startServer(instanceId, instanceDir) {
   if (st.mcProcess) return { error: "Servidor já está rodando" };
   ensureDir(instanceDir);
 
-  const jvm = readJvmSettings(instanceDir);
+  const instMeta = findInstance(instanceId);
+  const ownerUserId = instMeta != null ? Number(instMeta.ownerUserId) : null;
+  const jvm = readJvmSettings(instanceDir, ownerUserId);
   const minMb = Math.min(Math.max(256, jvm.minRamMb), jvm.maxRamMb);
   const maxMb = Math.max(minMb, jvm.maxRamMb);
   const minRam = `${minMb}M`;
@@ -677,7 +763,9 @@ async function getStats(instanceId, instanceDir) {
     players = Math.max(0, recentJoins - recentLeaves);
   }
 
-  const jvm = readJvmSettings(instanceDir);
+  const instForStats = findInstance(instanceId);
+  const ownerForStats = instForStats != null ? Number(instForStats.ownerUserId) : null;
+  const jvm = readJvmSettings(instanceDir, ownerForStats);
 
   return {
     cpu,
@@ -712,7 +800,7 @@ function getDirSizeMB(dirPath) {
 app.get("/api/instances", (req, res) => {
   try {
     if (!userCanCreateInstances(req.user.id)) {
-      return res.json([]);
+      return res.json({ instances: [] });
     }
     const reg = loadInstancesRegistry();
     const uid = Number(req.user.id);
@@ -730,7 +818,14 @@ app.get("/api/instances", (req, res) => {
         connectAddress: `${PUBLIC_HOST}:${serverPort}`,
       };
     });
-    res.json(out);
+    res.json({
+      instances: out,
+      hosting: {
+        instanceCount: mine.length,
+        maxInstances: resolveUserMaxInstances(uid),
+        maxRamMbPerInstance: resolveUserRamCapMb(uid),
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -746,6 +841,14 @@ app.post("/api/instances", (req, res) => {
     }
     const name = String(req.body?.name || "Novo servidor").trim() || "Novo servidor";
     const reg = loadInstancesRegistry();
+    const uid = Number(req.user.id);
+    const mine = reg.instances.filter((i) => Number(i.ownerUserId) === uid);
+    const maxInst = resolveUserMaxInstances(uid);
+    if (mine.length >= maxInst) {
+      return res.status(403).json({
+        error: `Limite de instâncias atingido (${maxInst}). Peça ao administrador para aumentar sua cota.`,
+      });
+    }
     const id = `inst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const serverPort = allocateNextServerPort(reg);
     reg.instances.push({ id, name, mode: "data", serverPort, ownerUserId: req.user.id });
@@ -753,6 +856,23 @@ app.post("/api/instances", (req, res) => {
     const dir = getInstancePath({ id, mode: "data" });
     ensureDir(dir);
     writeServerPortInProperties(dir, serverPort);
+    const initialJvm = getDefaultJvmSettingsForNewUser(uid);
+    writeJvmSettings(
+      dir,
+      {
+        minRamMb: initialJvm.minRamMb,
+        maxRamMb: initialJvm.maxRamMb,
+        javaVersion: initialJvm.javaVersion,
+        javaPath: initialJvm.javaPath,
+        jarFile: initialJvm.jarFile,
+        extraFlags: initialJvm.extraFlags,
+        autoRestart: initialJvm.autoRestart,
+        crashDetection: initialJvm.crashDetection,
+        autoBackup: initialJvm.autoBackup,
+        backupIntervalHours: initialJvm.backupIntervalHours,
+      },
+      uid
+    );
     res.json({
       success: true,
       id,
@@ -768,8 +888,9 @@ app.post("/api/instances", (req, res) => {
 // ===================== ROUTES: JVM / host settings (persistido por instância) =====================
 app.get("/api/instance-settings", (req, res) => {
   try {
-    const settings = readJvmSettings(req.instanceDir);
-    res.json(settings);
+    const settings = readJvmSettings(req.instanceDir, Number(req.user.id));
+    const cap = resolveUserRamCapMb(req.user.id);
+    res.json({ ...settings, ramQuotaMb: cap });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -806,8 +927,9 @@ app.put("/api/instance-settings", (req, res) => {
     if (st.mcProcess && affectsJvm) {
       return res.status(400).json({ error: "Pare o servidor antes de alterar memória, Java ou flags JVM" });
     }
-    const saved = writeJvmSettings(req.instanceDir, patch);
-    res.json({ success: true, settings: saved });
+    const saved = writeJvmSettings(req.instanceDir, patch, Number(req.user.id));
+    const cap = resolveUserRamCapMb(req.user.id);
+    res.json({ success: true, settings: saved, ramQuotaMb: cap });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -1232,11 +1354,12 @@ app.post("/api/versions/install", async (req, res) => {
   if (!type || !version) return res.status(400).json({ error: "Tipo e versão são obrigatórios" });
   if (st.mcProcess) return res.status(400).json({ error: "Pare o servidor antes de trocar a versão" });
 
-  const jvm = readJvmSettings(instanceDir);
+  const instMeta = findInstance(instanceId);
+  const ownerJvm = instMeta != null ? Number(instMeta.ownerUserId) : null;
+  const jvm = readJvmSettings(instanceDir, ownerJvm);
   const jarName = jvm.jarFile || JAR_FILE;
   const javaBin = jvm.javaPath || JAVA_PATH;
 
-  const instMeta = findInstance(instanceId);
   const previousInstall = getCurrentServerInfo(instanceDir);
   if (previousInstall && previousInstall.type) {
     wipeInstanceForFullReinstall(instanceId, instanceDir, instMeta);
