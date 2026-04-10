@@ -135,7 +135,7 @@ export function useServerState() {
     setLogs([]);
 
     let i = 0;
-    const startInterval = setInterval(() => {
+    const startInterval = window.setInterval(() => {
       if (i < INITIAL_LOGS.length) {
         setLogs(prev => [...prev, { ...INITIAL_LOGS[i], id: logIdRef.current++ }]);
         i++;
