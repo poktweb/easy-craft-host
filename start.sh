@@ -35,13 +35,15 @@ if [ ! -d "$SCRIPT_DIR/backend/node_modules" ]; then
 fi
 
 # Build frontend in production
+# Padrão: mesma origem (/api no domínio com HTTPS). Teste local sem proxy: VITE_USE_SAME_ORIGIN_API=false ./start.sh
 if [ "$MODE" = "production" ]; then
   echo "[pokt Craft] Fazendo build do frontend..."
-  if [ "${VITE_USE_SAME_ORIGIN_API:-}" = "true" ] || [ "${VITE_USE_SAME_ORIGIN_API:-}" = "1" ]; then
-    echo "[pokt Craft] Build em modo same-origin (API em /api via proxy HTTPS — defina nginx/Caddy)."
-    cd "$SCRIPT_DIR" && VITE_USE_SAME_ORIGIN_API=true npm run build
-  else
+  if [ "${VITE_USE_SAME_ORIGIN_API:-}" = "false" ] || [ "${VITE_USE_SAME_ORIGIN_API:-}" = "0" ]; then
+    echo "[pokt Craft] Build legado: API em http://IP:$BACKEND_PORT (sem HTTPS no mesmo host)."
     cd "$SCRIPT_DIR" && VITE_API_URL="http://$(hostname -I | awk '{print $1}'):$BACKEND_PORT" npm run build
+  else
+    echo "[pokt Craft] Build same-origin: use Nginx/Caddy em HTTPS com /api e /ws → Node:$BACKEND_PORT"
+    cd "$SCRIPT_DIR" && VITE_USE_SAME_ORIGIN_API=true npm run build
   fi
 fi
 

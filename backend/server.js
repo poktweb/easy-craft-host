@@ -387,6 +387,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true });
+});
+
 // Auth routes (no middleware needed)
 app.post("/api/auth/login", (req, res) => {
   const { username, password } = req.body;

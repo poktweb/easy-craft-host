@@ -118,7 +118,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: user, password }),
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: { token?: string; username?: string; error?: string } = {};
+      try {
+        data = text ? (JSON.parse(text) as typeof data) : {};
+      } catch {
+        return {
+          success: false,
+          error:
+            "A API não devolveu JSON (geralmente página de erro do proxy). Confira Nginx/Caddy: /api e /ws devem ir para o Node na porta do backend.",
+        };
+      }
       if (data.token) {
         setToken(data.token);
         setUsername(data.username);
@@ -127,9 +137,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         applyProfilePayload(setCanHost, setIsAdmin, data);
         return { success: true };
       }
-      return { success: false, error: data.error || "Erro ao fazer login" };
-    } catch {
-      return { success: false, error: "Erro de conexão com o servidor" };
+      return { success: false, error: data.error || `Login recusado (HTTP ${res.status})` };
+    } catch (e) {
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
+      const healthCheck = API_URL === "" ? `${origin}/api/health` : `${API_URL}/api/health`;
+      const target = API_URL === "" ? `${origin}/api (proxy obrigatório)` : API_URL;
+      const hint =
+        e instanceof TypeError
+          ? `Sem resposta da API (${target}). Abra: ${healthCheck} — deve aparecer {"ok":true}. Se falhar: SSL do domínio, proxy /api e /ws no Nginx até o Node, ou backend parado.`
+          : `Erro de rede: ${e instanceof Error ? e.message : String(e)}`;
+      return { success: false, error: hint };
     }
   };
 
