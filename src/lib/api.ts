@@ -1,4 +1,11 @@
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3001";
+function getDefaultApiUrl() {
+  if (typeof window === "undefined") return "http://localhost:3001";
+  const protocol = window.location.protocol;
+  const hostname = window.location.hostname;
+  return `${protocol}//${hostname}:3001`;
+}
+
+const API_URL = import.meta.env.VITE_API_URL || getDefaultApiUrl();
 const WS_URL = API_URL.replace(/^http/, "ws") + "/ws";
 
 export { API_URL, WS_URL };
