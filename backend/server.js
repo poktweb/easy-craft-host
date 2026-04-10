@@ -70,7 +70,14 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 const clients = new Set();
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  // Validate token from query string
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const token = url.searchParams.get("token");
+  if (!token || !verifyToken(token)) {
+    ws.close(4001, "Unauthorized");
+    return;
+  }
   clients.add(ws);
   // Send current state
   ws.send(JSON.stringify({ type: "status", data: serverStatus }));
