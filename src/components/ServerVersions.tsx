@@ -32,6 +32,13 @@ const SERVER_TYPES: ServerType[] = [
     category: "plugins",
   },
   {
+    id: "spigot",
+    name: "Spigot",
+    description: "Clássico para plugins, amplo suporte da comunidade.",
+    icon: <Settings className="h-6 w-6" />,
+    category: "plugins",
+  },
+  {
     id: "vanilla",
     name: "Vanilla",
     description: "Servidor oficial do Minecraft sem modificações.",
@@ -44,6 +51,27 @@ const SERVER_TYPES: ServerType[] = [
     description: "Fork do Paper focado em alto desempenho com paralelismo.",
     icon: <Zap className="h-6 w-6" />,
     category: "plugins",
+  },
+  {
+    id: "fabric",
+    name: "Fabric",
+    description: "Modloader leve e moderno para mods.",
+    icon: <Zap className="h-6 w-6" />,
+    category: "modded",
+  },
+  {
+    id: "forge",
+    name: "Forge",
+    description: "Modloader clássico com ampla compatibilidade de mods.",
+    icon: <Settings className="h-6 w-6" />,
+    category: "modded",
+  },
+  {
+    id: "neoforge",
+    name: "NeoForge",
+    description: "Sucessor moderno do Forge para mods.",
+    icon: <Eye className="h-6 w-6" />,
+    category: "modded",
   },
 ];
 
@@ -154,7 +182,7 @@ export default function ServerVersions() {
   };
 
   const selectedOrCurrentType = selectedType || currentInfo?.type || "";
-  const supportsPlugins = ["paper", "purpur", "folia"].includes(selectedOrCurrentType);
+  const supportsPlugins = ["paper", "purpur", "folia", "spigot"].includes(selectedOrCurrentType);
 
   const handleInstallPlugin = async () => {
     if (!pluginUrl.trim()) {
@@ -162,7 +190,7 @@ export default function ServerVersions() {
       return;
     }
     if (!supportsPlugins) {
-      toast.error("Selecione um modo compatível com plugins (Paper, Purpur ou Folia)");
+      toast.error("Selecione um modo compatível com plugins (Paper, Purpur, Folia ou Spigot)");
       return;
     }
 
@@ -196,6 +224,7 @@ export default function ServerVersions() {
   const categoryGroups = {
     plugins: SERVER_TYPES.filter((s) => s.category === "plugins"),
     vanilla: SERVER_TYPES.filter((s) => s.category === "vanilla"),
+    modded: SERVER_TYPES.filter((s) => s.category === "modded"),
   };
 
   return (
@@ -268,6 +297,22 @@ export default function ServerVersions() {
         </div>
       </div>
 
+      {/* Modloaders category */}
+      <div>
+        <h2 className="text-xl font-bold text-foreground mb-4">Mods</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {categoryGroups.modded.map((server) => (
+            <ServerTypeCard
+              key={server.id}
+              server={server}
+              isSelected={selectedType === server.id}
+              isCurrent={currentInfo?.type === server.id}
+              onSelect={() => loadVersions(server.id)}
+            />
+          ))}
+        </div>
+      </div>
+
       {/* Version selector */}
       {selectedType && (
         <Card className="border-primary/30 bg-card">
@@ -326,6 +371,11 @@ export default function ServerVersions() {
             <p className="text-xs text-muted-foreground">
               ⚠️ O servidor deve estar parado. O server.jar atual será substituído.
             </p>
+            {(selectedType === "forge" || selectedType === "neoforge") && (
+              <p className="text-xs text-muted-foreground">
+                Para Forge/NeoForge, o painel usa o instalador oficial e configura a inicialização automaticamente.
+              </p>
+            )}
           </CardContent>
         </Card>
       )}
@@ -340,7 +390,7 @@ export default function ServerVersions() {
 
           {!supportsPlugins && (
             <p className="text-sm text-muted-foreground">
-              Para instalar plugins, escolha um modo compatível: <span className="font-medium">Paper, Purpur ou Folia</span>.
+              Para instalar plugins, escolha um modo compatível: <span className="font-medium">Paper, Purpur, Folia ou Spigot</span>.
             </p>
           )}
 

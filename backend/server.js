@@ -31,6 +31,7 @@ let serverStatus = "stopped"; // stopped | starting | running | stopping
 let logs = [];                // { id, timestamp, level, message }
 let logId = 0;
 let startTime = null;
+const START_PROFILE_PATH = path.join(SERVER_DIR, ".mchost_start_profile.json");
 
 // ===================== EXPRESS =====================
 const app = express();
@@ -109,13 +110,88 @@ function ensureDir(dir) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+function saveStartProfile(profile) {
+  ensureDir(SERVER_DIR);
+  fs.writeFileSync(START_PROFILE_PATH, JSON.stringify(profile, null, 2), "utf-8");
+}
+
+function getStartProfile() {
+  if (!fs.existsSync(START_PROFILE_PATH)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(START_PROFILE_PATH, "utf-8"));
+  } catch (_e) {
+    return null;
+  }
+}
+
+function clearStartProfile() {
+  if (fs.existsSync(START_PROFILE_PATH)) fs.unlinkSync(START_PROFILE_PATH);
+}
+
+function getForgeLikeArgsFile(startType) {
+  const root =
+    startType === "neoforge"
+      ? path.join(SERVER_DIR, "libraries", "net", "neoforged", "neoforge")
+      : path.join(SERVER_DIR, "libraries", "net", "minecraftforge", "forge");
+  if (!fs.existsSync(root)) return null;
+  try {
+    const versions = fs.readdirSync(root).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    for (const version of versions) {
+      const base = path.join(root, version);
+      const candidates = ["win_args.txt", "unix_args.txt"];
+      for (const name of candidates) {
+        const p = path.join(base, name);
+        if (fs.existsSync(p)) return path.relative(SERVER_DIR, p);
+      }
+    }
+  } catch (_e) {}
+  return null;
+}
+
+function runProcess(command, args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.on("data", (data) => addLog("INFO", data.toString().trim()));
+    child.stderr.on("data", (data) => addLog("WARN", data.toString().trim()));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Processo finalizado com código ${code}`));
+    });
+  });
+}
+
 function startServer() {
   if (mcProcess) return { error: "Servidor já está rodando" };
   ensureDir(SERVER_DIR);
 
-  const jarPath = path.join(SERVER_DIR, JAR_FILE);
-  if (!fs.existsSync(jarPath)) {
-    return { error: `${JAR_FILE} não encontrado em ${SERVER_DIR}` };
+  const startProfile = getStartProfile();
+  let flags = [];
+  if (startProfile?.mode === "argsFile" && startProfile.argsFile) {
+    const argsPath = path.join(SERVER_DIR, startProfile.argsFile);
+    if (!fs.existsSync(argsPath)) {
+      return { error: `Arquivo de inicialização não encontrado: ${startProfile.argsFile}` };
+    }
+    flags = [
+      `-Xms${MIN_RAM}`,
+      `-Xmx${MAX_RAM}`,
+      ...(EXTRA_FLAGS ? EXTRA_FLAGS.split(" ").filter(Boolean) : []),
+      `@${startProfile.argsFile}`,
+      "nogui",
+    ];
+  } else {
+    const jarPath = path.join(SERVER_DIR, JAR_FILE);
+    if (!fs.existsSync(jarPath)) {
+      return { error: `${JAR_FILE} não encontrado em ${SERVER_DIR}` };
+    }
+    flags = [
+      `-Xms${MIN_RAM}`,
+      `-Xmx${MAX_RAM}`,
+      ...(EXTRA_FLAGS ? EXTRA_FLAGS.split(" ").filter(Boolean) : []),
+      "-jar",
+      JAR_FILE,
+      "nogui",
+    ];
   }
 
   // Auto-aceitar EULA
@@ -128,15 +204,6 @@ function startServer() {
   logId = 0;
   addLog("INFO", "EULA aceito automaticamente.");
   addLog("INFO", "Iniciando servidor...");
-
-  const flags = [
-    `-Xms${MIN_RAM}`,
-    `-Xmx${MAX_RAM}`,
-    ...(EXTRA_FLAGS ? EXTRA_FLAGS.split(" ").filter(Boolean) : []),
-    "-jar",
-    JAR_FILE,
-    "nogui",
-  ];
 
   mcProcess = spawn(JAVA_PATH, flags, {
     cwd: SERVER_DIR,
@@ -620,6 +687,38 @@ app.get("/api/versions/:type", async (req, res) => {
       const resp = await httpGet("https://api.papermc.io/v2/projects/folia");
       const data = JSON.parse(resp.data);
       versions = data.versions.reverse();
+    } else if (type === "spigot") {
+      const resp = await httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
+      const data = JSON.parse(resp.data);
+      versions = data.versions
+        .filter((v) => v.type === "release")
+        .map((v) => v.id);
+    } else if (type === "fabric") {
+      const resp = await httpGet("https://meta.fabricmc.net/v2/versions/game");
+      const data = JSON.parse(resp.data);
+      versions = data
+        .filter((v) => v.stable)
+        .map((v) => v.version);
+    } else if (type === "forge") {
+      const resp = await httpGet("https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json");
+      const data = JSON.parse(resp.data);
+      const promos = data.promos || {};
+      const gameVersions = new Set();
+      for (const key of Object.keys(promos)) {
+        const [mc] = key.split("-");
+        if (mc) gameVersions.add(mc);
+      }
+      versions = Array.from(gameVersions).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    } else if (type === "neoforge") {
+      const resp = await httpGet("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml");
+      const xml = resp.data;
+      const matches = [...xml.matchAll(/<version>([^<]+)<\/version>/g)].map((m) => m[1]);
+      const gameVersions = new Set();
+      for (const full of matches) {
+        const [mc] = full.split("-");
+        if (mc && /^\d+\.\d+/.test(mc)) gameVersions.add(mc);
+      }
+      versions = Array.from(gameVersions).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
     } else if (type === "vanilla") {
       const resp = await httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
       const data = JSON.parse(resp.data);
@@ -627,7 +726,7 @@ app.get("/api/versions/:type", async (req, res) => {
         .filter((v) => v.type === "release")
         .map((v) => v.id);
     } else {
-      return res.status(400).json({ error: "Tipo inválido. Use: paper, purpur, folia, vanilla" });
+      return res.status(400).json({ error: "Tipo inválido. Use: paper, purpur, folia, spigot, fabric, forge, neoforge, vanilla" });
     }
     const finalVersions = Number.isFinite(limit) && limit > 0 ? versions.slice(0, limit) : versions;
     res.json({ versions: finalVersions });
@@ -664,6 +763,65 @@ app.post("/api/versions/install", async (req, res) => {
       const latestBuild = buildsData.builds[buildsData.builds.length - 1];
       const fileName = latestBuild.downloads.application.name;
       downloadUrl = `https://api.papermc.io/v2/projects/folia/versions/${version}/builds/${latestBuild.build}/downloads/${fileName}`;
+    } else if (type === "spigot") {
+      downloadUrl = `https://download.getbukkit.org/spigot/spigot-${version}.jar`;
+    } else if (type === "fabric") {
+      const loadersResp = await httpGet("https://meta.fabricmc.net/v2/versions/loader");
+      const installersResp = await httpGet("https://meta.fabricmc.net/v2/versions/installer");
+      const loaders = JSON.parse(loadersResp.data);
+      const installers = JSON.parse(installersResp.data);
+      const latestLoader = loaders[0]?.version;
+      const latestInstaller = installers[0]?.version;
+      if (!latestLoader || !latestInstaller) throw new Error("Não foi possível resolver versões do Fabric");
+      downloadUrl = `https://meta.fabricmc.net/v2/versions/loader/${version}/${latestLoader}/${latestInstaller}/server/jar`;
+    } else if (type === "forge") {
+      const promotionsResp = await httpGet("https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json");
+      const promotions = JSON.parse(promotionsResp.data)?.promos || {};
+      const forgeVersion = promotions[`${version}-latest`] || promotions[`${version}-recommended`];
+      if (!forgeVersion) throw new Error(`Não há build Forge disponível para ${version}`);
+
+      const installerName = `forge-${version}-${forgeVersion}-installer.jar`;
+      const installerUrl = `https://maven.minecraftforge.net/net/minecraftforge/forge/${version}-${forgeVersion}/${installerName}`;
+      const installerPath = path.join(SERVER_DIR, installerName);
+      await downloadFile(installerUrl, installerPath);
+      addLog("INFO", `Executando installer do Forge ${version}-${forgeVersion}...`);
+      await runProcess(JAVA_PATH, ["-jar", installerName, "--installServer"], SERVER_DIR);
+
+      const argsFile = getForgeLikeArgsFile("forge");
+      if (!argsFile) throw new Error("Instalação concluída, mas arquivo de argumentos do Forge não foi encontrado");
+      saveStartProfile({ mode: "argsFile", argsFile, type: "forge", installedAt: new Date().toISOString() });
+
+      if (fs.existsSync(installerPath)) fs.unlinkSync(installerPath);
+      saveServerInfo({ type, version: `${version}-${forgeVersion}`, installedAt: new Date().toISOString() });
+      installProgress = { type, version: `${version}-${forgeVersion}`, status: "done", progress: 100 };
+      broadcast("install_progress", installProgress);
+      addLog("INFO", `forge ${version}-${forgeVersion} instalado com sucesso!`);
+      return res.json({ success: true });
+    } else if (type === "neoforge") {
+      const metaResp = await httpGet("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml");
+      const matches = [...metaResp.data.matchAll(/<version>([^<]+)<\/version>/g)].map((m) => m[1]);
+      const fullVersion = matches
+        .filter((v) => v.startsWith(`${version}.`) || v === version)
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
+      if (!fullVersion) throw new Error(`Não há build NeoForge disponível para ${version}`);
+
+      const installerName = `neoforge-${fullVersion}-installer.jar`;
+      const installerUrl = `https://maven.neoforged.net/releases/net/neoforged/neoforge/${fullVersion}/${installerName}`;
+      const installerPath = path.join(SERVER_DIR, installerName);
+      await downloadFile(installerUrl, installerPath);
+      addLog("INFO", `Executando installer do NeoForge ${fullVersion}...`);
+      await runProcess(JAVA_PATH, ["-jar", installerName, "--installServer"], SERVER_DIR);
+
+      const argsFile = getForgeLikeArgsFile("neoforge");
+      if (!argsFile) throw new Error("Instalação concluída, mas arquivo de argumentos do NeoForge não foi encontrado");
+      saveStartProfile({ mode: "argsFile", argsFile, type: "neoforge", installedAt: new Date().toISOString() });
+
+      if (fs.existsSync(installerPath)) fs.unlinkSync(installerPath);
+      saveServerInfo({ type, version: fullVersion, installedAt: new Date().toISOString() });
+      installProgress = { type, version: fullVersion, status: "done", progress: 100 };
+      broadcast("install_progress", installProgress);
+      addLog("INFO", `neoforge ${fullVersion} instalado com sucesso!`);
+      return res.json({ success: true });
     } else if (type === "vanilla") {
       const manifestResp = await httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
       const manifest = JSON.parse(manifestResp.data);
@@ -687,6 +845,7 @@ app.post("/api/versions/install", async (req, res) => {
 
     ensureDir(SERVER_DIR);
     await downloadFile(downloadUrl, jarPath);
+    clearStartProfile();
 
     saveServerInfo({ type, version, installedAt: new Date().toISOString() });
 
@@ -708,7 +867,7 @@ app.get("/api/versions/install/progress", (req, res) => {
 });
 
 // ===================== ROUTES: PLUGINS =====================
-const PLUGIN_COMPATIBLE_TYPES = new Set(["paper", "purpur", "folia"]);
+const PLUGIN_COMPATIBLE_TYPES = new Set(["paper", "purpur", "folia", "spigot"]);
 
 function sanitizePluginName(name) {
   return String(name || "")
