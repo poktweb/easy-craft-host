@@ -13,10 +13,8 @@ npm install
 mkdir -p minecraft
 cp /caminho/do/server.jar minecraft/
 
-# 4. Aceite o EULA
-echo "eula=true" > minecraft/eula.txt
-
-# 5. Configure as variáveis de ambiente (opcional)
+# 4. Inicie o backend (EULA é aceito automaticamente)
+npm start
 export PORT=3001
 export MC_SERVER_DIR=/caminho/absoluto/para/minecraft
 export MC_JAR=server.jar
