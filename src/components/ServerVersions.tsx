@@ -88,6 +88,16 @@ interface InstallProgress {
   error?: string;
 }
 
+interface ModItem {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  downloads: number;
+  iconUrl?: string | null;
+  author?: string;
+}
+
 function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem("mchost_token");
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -108,6 +118,10 @@ export default function ServerVersions() {
   const [plugins, setPlugins] = useState<string[]>([]);
   const [loadingPlugins, setLoadingPlugins] = useState(false);
   const [installingPlugin, setInstallingPlugin] = useState(false);
+  const [modsCatalog, setModsCatalog] = useState<ModItem[]>([]);
+  const [installedMods, setInstalledMods] = useState<string[]>([]);
+  const [loadingMods, setLoadingMods] = useState(false);
+  const [installingModId, setInstallingModId] = useState<string | null>(null);
 
   // Fetch current server info
   useEffect(() => {
@@ -183,6 +197,35 @@ export default function ServerVersions() {
 
   const selectedOrCurrentType = selectedType || currentInfo?.type || "";
   const supportsPlugins = ["paper", "purpur", "folia", "spigot"].includes(selectedOrCurrentType);
+  const supportsMods = ["fabric", "forge", "neoforge"].includes(selectedOrCurrentType);
+  const selectedOrCurrentVersion = selectedVersion || currentInfo?.version || "";
+  const gameVersion = (selectedOrCurrentVersion.match(/\d+\.\d+(?:\.\d+)?/) || [""])[0];
+
+  const loadMods = useCallback(async () => {
+    if (!supportsMods || !gameVersion) {
+      setModsCatalog([]);
+      setInstalledMods([]);
+      return;
+    }
+    setLoadingMods(true);
+    try {
+      const [catalogRes, installedRes] = await Promise.all([
+        fetch(`${API_URL}/api/mods/catalog?serverType=${encodeURIComponent(selectedOrCurrentType)}&version=${encodeURIComponent(gameVersion)}&limit=18`, { headers: getAuthHeaders() }),
+        fetch(`${API_URL}/api/mods/list`, { headers: getAuthHeaders() }),
+      ]);
+      const [catalogData, installedData] = await Promise.all([catalogRes.json(), installedRes.json()]);
+      setModsCatalog(Array.isArray(catalogData?.mods) ? catalogData.mods : []);
+      setInstalledMods(Array.isArray(installedData) ? installedData : []);
+    } catch {
+      toast.error("Erro ao carregar catálogo de mods");
+    } finally {
+      setLoadingMods(false);
+    }
+  }, [supportsMods, gameVersion, selectedOrCurrentType]);
+
+  useEffect(() => {
+    loadMods();
+  }, [loadMods]);
 
   const handleInstallPlugin = async () => {
     if (!pluginUrl.trim()) {
@@ -218,6 +261,41 @@ export default function ServerVersions() {
       toast.error("Erro ao baixar plugin");
     } finally {
       setInstallingPlugin(false);
+    }
+  };
+
+  const handleInstallMod = async (mod: ModItem) => {
+    if (!supportsMods) {
+      toast.error("Selecione Fabric, Forge ou NeoForge para instalar mods");
+      return;
+    }
+    if (!gameVersion) {
+      toast.error("Selecione uma versão válida do Minecraft para instalar mods");
+      return;
+    }
+
+    setInstallingModId(mod.id);
+    try {
+      const res = await fetch(`${API_URL}/api/mods/install`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          projectId: mod.id,
+          serverType: selectedOrCurrentType,
+          gameVersion,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        toast.error(data.error || "Falha ao instalar mod");
+        return;
+      }
+      toast.success(`Mod ${data.name || mod.title} instalado com sucesso!`);
+      await loadMods();
+    } catch {
+      toast.error("Erro ao instalar mod");
+    } finally {
+      setInstallingModId(null);
     }
   };
 
@@ -430,6 +508,71 @@ export default function ServerVersions() {
               <div className="flex flex-wrap gap-2">
                 {plugins.map((plugin) => (
                   <Badge key={plugin} variant="secondary">{plugin}</Badge>
+                ))}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Mod installer */}
+      <Card className="border-border/50">
+        <CardContent className="py-6 space-y-4">
+          <h3 className="font-bold text-foreground flex items-center gap-2">
+            <Zap className="h-5 w-5 text-primary" />
+            Instalar Mods
+          </h3>
+
+          {!supportsMods && (
+            <p className="text-sm text-muted-foreground">
+              Para instalar mods, escolha um modo compatível: <span className="font-medium">Fabric, Forge ou NeoForge</span>.
+            </p>
+          )}
+
+          {supportsMods && (
+            <p className="text-xs text-muted-foreground">
+              Catálogo para Minecraft <span className="font-medium">{gameVersion || "?"}</span> ({selectedOrCurrentType}).
+            </p>
+          )}
+
+          {loadingMods ? (
+            <p className="text-sm text-muted-foreground">Carregando mods...</p>
+          ) : supportsMods && modsCatalog.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {modsCatalog.map((mod) => (
+                <div key={mod.id} className="rounded-lg border border-border/50 p-3 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">{mod.title}</p>
+                      <p className="text-xs text-muted-foreground">{mod.author || "Autor desconhecido"}</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => handleInstallMod(mod)}
+                      disabled={installingModId !== null}
+                    >
+                      {installingModId === mod.id ? "Instalando..." : "Instalar"}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground line-clamp-2">{mod.description}</p>
+                  <p className="text-xs text-muted-foreground">{mod.downloads.toLocaleString("pt-BR")} downloads</p>
+                </div>
+              ))}
+            </div>
+          ) : supportsMods ? (
+            <p className="text-sm text-muted-foreground">Nenhum mod encontrado para esta combinação de loader/versão.</p>
+          ) : null}
+
+          <div className="rounded-lg border border-border/50 p-3">
+            <p className="text-sm font-medium text-foreground mb-2">Mods já baixados</p>
+            {loadingMods ? (
+              <p className="text-sm text-muted-foreground">Carregando...</p>
+            ) : installedMods.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Nenhum mod encontrado na pasta `mods`.</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {installedMods.map((mod) => (
+                  <Badge key={mod} variant="secondary">{mod}</Badge>
                 ))}
               </div>
             )}

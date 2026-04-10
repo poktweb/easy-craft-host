@@ -650,6 +650,39 @@ function downloadFile(url, dest) {
   });
 }
 
+async function downloadFileWithFallback(urls, dest) {
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      await downloadFile(url, dest);
+      return;
+    } catch (err) {
+      lastError = err;
+      addLog("WARN", `Falha ao baixar de ${url}: ${err.message}`);
+    }
+  }
+  throw lastError || new Error("Falha ao baixar arquivo");
+}
+
+function getNeoForgeVersionsFromHtml(html) {
+  const matches = [...html.matchAll(/href="\.\/([^/]+)\/"/g)].map((m) => m[1]);
+  return matches
+    .filter((v) => /^\d/.test(v))
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+}
+
+function normalizeMinecraftVersion(version) {
+  const match = String(version || "").match(/\d+\.\d+(?:\.\d+)?/);
+  return match ? match[0] : "";
+}
+
+function resolveModLoader(serverType) {
+  if (serverType === "fabric") return "fabric";
+  if (serverType === "forge") return "forge";
+  if (serverType === "neoforge") return "neoforge";
+  return null;
+}
+
 // Get current installed server info
 function getCurrentServerInfo() {
   const infoPath = path.join(SERVER_DIR, ".mchost_server_info.json");
@@ -710,15 +743,8 @@ app.get("/api/versions/:type", async (req, res) => {
       }
       versions = Array.from(gameVersions).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
     } else if (type === "neoforge") {
-      const resp = await httpGet("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml");
-      const xml = resp.data;
-      const matches = [...xml.matchAll(/<version>([^<]+)<\/version>/g)].map((m) => m[1]);
-      const gameVersions = new Set();
-      for (const full of matches) {
-        const [mc] = full.split("-");
-        if (mc && /^\d+\.\d+/.test(mc)) gameVersions.add(mc);
-      }
-      versions = Array.from(gameVersions).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      const resp = await httpGet("https://maven.neoforged.net/releases/net/neoforged/neoforge/");
+      versions = getNeoForgeVersionsFromHtml(resp.data);
     } else if (type === "vanilla") {
       const resp = await httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
       const data = JSON.parse(resp.data);
@@ -764,7 +790,32 @@ app.post("/api/versions/install", async (req, res) => {
       const fileName = latestBuild.downloads.application.name;
       downloadUrl = `https://api.papermc.io/v2/projects/folia/versions/${version}/builds/${latestBuild.build}/downloads/${fileName}`;
     } else if (type === "spigot") {
-      downloadUrl = `https://download.getbukkit.org/spigot/spigot-${version}.jar`;
+      // download.getbukkit.org pode falhar por DNS em alguns provedores.
+      // Tenta CDN oficial como fallback.
+      const spigotUrls = [
+        `https://download.getbukkit.org/spigot/spigot-${version}.jar`,
+        `https://cdn.getbukkit.org/spigot/spigot-${version}.jar`,
+      ];
+
+      installProgress.status = "downloading";
+      broadcast("install_progress", installProgress);
+      addLog("INFO", `Baixando ${type} ${version}...`);
+
+      const jarPath = path.join(SERVER_DIR, JAR_FILE);
+      if (fs.existsSync(jarPath)) {
+        fs.unlinkSync(jarPath);
+        addLog("INFO", "server.jar antigo removido.");
+      }
+
+      ensureDir(SERVER_DIR);
+      await downloadFileWithFallback(spigotUrls, jarPath);
+      clearStartProfile();
+      saveServerInfo({ type, version, installedAt: new Date().toISOString() });
+
+      installProgress = { type, version, status: "done", progress: 100 };
+      broadcast("install_progress", installProgress);
+      addLog("INFO", `${type} ${version} instalado com sucesso!`);
+      return res.json({ success: true });
     } else if (type === "fabric") {
       const loadersResp = await httpGet("https://meta.fabricmc.net/v2/versions/loader");
       const installersResp = await httpGet("https://meta.fabricmc.net/v2/versions/installer");
@@ -798,10 +849,10 @@ app.post("/api/versions/install", async (req, res) => {
       addLog("INFO", `forge ${version}-${forgeVersion} instalado com sucesso!`);
       return res.json({ success: true });
     } else if (type === "neoforge") {
-      const metaResp = await httpGet("https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml");
-      const matches = [...metaResp.data.matchAll(/<version>([^<]+)<\/version>/g)].map((m) => m[1]);
+      const versionsResp = await httpGet("https://maven.neoforged.net/releases/net/neoforged/neoforge/");
+      const matches = getNeoForgeVersionsFromHtml(versionsResp.data);
       const fullVersion = matches
-        .filter((v) => v.startsWith(`${version}.`) || v === version)
+        .filter((v) => v.startsWith(`${version}.`) || v === version || normalizeMinecraftVersion(v) === normalizeMinecraftVersion(version))
         .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
       if (!fullVersion) throw new Error(`Não há build NeoForge disponível para ${version}`);
 
@@ -911,6 +962,105 @@ app.post("/api/plugins/install", async (req, res) => {
     res.json({ success: true, name: fileName });
   } catch (err) {
     res.status(500).json({ error: `Falha ao baixar plugin: ${err.message}` });
+  }
+});
+
+// ===================== ROUTES: MODS =====================
+const MOD_COMPATIBLE_TYPES = new Set(["fabric", "forge", "neoforge"]);
+
+app.get("/api/mods/catalog", async (req, res) => {
+  const serverType = String(req.query.serverType || "");
+  const loader = resolveModLoader(serverType);
+  const gameVersion = normalizeMinecraftVersion(req.query.version);
+  const limit = Math.min(parseInt(req.query.limit, 10) || 18, 40);
+
+  if (!loader || !MOD_COMPATIBLE_TYPES.has(serverType)) {
+    return res.status(400).json({ error: "Tipo de servidor inválido para mods" });
+  }
+  if (!gameVersion) {
+    return res.status(400).json({ error: "Versão do Minecraft é obrigatória para listar mods" });
+  }
+
+  try {
+    const facets = JSON.stringify([
+      ["project_type:mod"],
+      [`categories:${loader}`],
+      [`versions:${gameVersion}`],
+    ]);
+    const url = `https://api.modrinth.com/v2/search?limit=${limit}&index=downloads&facets=${encodeURIComponent(facets)}`;
+    const resp = await httpGet(url);
+    const data = JSON.parse(resp.data);
+    const hits = Array.isArray(data.hits) ? data.hits : [];
+
+    const mods = hits.map((mod) => ({
+      id: mod.project_id,
+      slug: mod.slug,
+      title: mod.title,
+      description: mod.description,
+      downloads: mod.downloads || 0,
+      iconUrl: mod.icon_url || null,
+      author: mod.author || "Desconhecido",
+    }));
+
+    res.json({ mods });
+  } catch (err) {
+    res.status(500).json({ error: `Erro ao buscar catálogo de mods: ${err.message}` });
+  }
+});
+
+app.get("/api/mods/list", (req, res) => {
+  try {
+    const modsDir = path.join(SERVER_DIR, "mods");
+    if (!fs.existsSync(modsDir)) return res.json([]);
+    const mods = fs.readdirSync(modsDir)
+      .filter((name) => name.toLowerCase().endsWith(".jar"))
+      .sort((a, b) => a.localeCompare(b));
+    res.json(mods);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/mods/install", async (req, res) => {
+  const { projectId, serverType, gameVersion } = req.body || {};
+  const loader = resolveModLoader(serverType);
+  const mcVersion = normalizeMinecraftVersion(gameVersion);
+
+  if (!projectId || typeof projectId !== "string") {
+    return res.status(400).json({ error: "projectId do mod é obrigatório" });
+  }
+  if (!loader || !MOD_COMPATIBLE_TYPES.has(serverType)) {
+    return res.status(400).json({ error: "Tipo de servidor inválido para mods" });
+  }
+  if (!mcVersion) {
+    return res.status(400).json({ error: "Versão do Minecraft é obrigatória para instalar mod" });
+  }
+
+  try {
+    const versionsUrl = `https://api.modrinth.com/v2/project/${projectId}/version?loaders=${encodeURIComponent(JSON.stringify([loader]))}&game_versions=${encodeURIComponent(JSON.stringify([mcVersion]))}`;
+    const versionsResp = await httpGet(versionsUrl);
+    const versions = JSON.parse(versionsResp.data);
+    if (!Array.isArray(versions) || versions.length === 0) {
+      return res.status(404).json({ error: `Nenhuma versão compatível encontrada para ${loader} ${mcVersion}` });
+    }
+
+    const selected = versions[0];
+    const file = (selected.files || []).find((f) => f.primary) || (selected.files || [])[0];
+    if (!file?.url) {
+      return res.status(500).json({ error: "Arquivo do mod não encontrado na versão selecionada" });
+    }
+
+    const modsDir = path.join(SERVER_DIR, "mods");
+    ensureDir(modsDir);
+    const safeName = sanitizePluginName(file.filename || `${projectId}.jar`);
+    const finalName = safeName.toLowerCase().endsWith(".jar") ? safeName : `${safeName}.jar`;
+    const dest = path.join(modsDir, finalName);
+
+    await downloadFile(file.url, dest);
+    addLog("INFO", `Mod instalado: ${finalName}`);
+    res.json({ success: true, name: finalName });
+  } catch (err) {
+    res.status(500).json({ error: `Falha ao instalar mod: ${err.message}` });
   }
 });
 

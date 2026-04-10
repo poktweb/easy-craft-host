@@ -80,10 +80,10 @@ export default function ServerConsole({ logs, stats, status, onSendCommand }: Pr
         <RamChart value={stats.ram} />
       </div>
 
-      <div className="flex flex-col rounded-xl overflow-hidden border" style={{ minHeight: 500 }}>
+      <div className="flex h-[500px] flex-col rounded-xl overflow-hidden border">
         <div
           ref={scrollRef}
-          className="flex-1 overflow-y-auto p-4 font-mono text-sm console-scrollbar bg-console text-console-text"
+          className="flex-1 overflow-y-scroll p-4 font-mono text-sm console-scrollbar bg-console text-console-text"
         >
           {logs.map(log => (
             <div key={log.id} className="leading-relaxed">
