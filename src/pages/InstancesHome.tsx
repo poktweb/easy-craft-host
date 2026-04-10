@@ -68,7 +68,7 @@ export default function InstancesHome() {
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/20 border border-primary/30">
               <span className="text-lg font-bold text-primary">MC</span>
             </div>
-            <span className="text-lg font-bold text-foreground">MCHost</span>
+            <span className="text-lg font-bold text-foreground">pokt Craft</span>
           </div>
           <div className="flex items-center gap-3">
             {isAdmin && (

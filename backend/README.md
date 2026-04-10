@@ -1,4 +1,4 @@
-# MCHost Backend - Servidor de Minecraft
+# pokt Craft Backend - Servidor de Minecraft
 
 ## Instalação na VPS
 

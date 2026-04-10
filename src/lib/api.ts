@@ -24,7 +24,7 @@ export function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem("mchost_token");
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "X-MCHost-Instance": currentInstanceId,
+    "X-PoktCraft-Instance": currentInstanceId,
   };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   return headers;
@@ -32,7 +32,7 @@ export function getAuthHeaders(): Record<string, string> {
 
 function getAuthHeaderOnly(): Record<string, string> {
   const token = localStorage.getItem("mchost_token");
-  const h: Record<string, string> = { "X-MCHost-Instance": currentInstanceId };
+  const h: Record<string, string> = { "X-PoktCraft-Instance": currentInstanceId };
   if (token) h["Authorization"] = `Bearer ${token}`;
   return h;
 }

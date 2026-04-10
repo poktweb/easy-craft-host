@@ -50,7 +50,7 @@ export default function ServerHeader({ status, stats, onStart, onStop, onRestart
           <Server className="h-8 w-8 text-primary" />
         </div>
         <div>
-          <h1 className="text-3xl font-extrabold text-foreground tracking-tight">Servidor SMP+</h1>
+          <h1 className="text-3xl font-extrabold text-foreground tracking-tight">pokt Craft</h1>
           <button
             className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary transition-colors"
             onClick={() => { navigator.clipboard.writeText(ip); toast.success("IP copiado!"); }}

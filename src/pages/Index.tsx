@@ -87,7 +87,7 @@ const Index = () => {
               <span className="text-lg font-bold text-primary glow-text">MC</span>
             </div>
             <div className="flex flex-col min-w-0">
-              <span className="text-lg font-bold text-foreground leading-tight">MCHost</span>
+              <span className="text-lg font-bold text-foreground leading-tight">pokt Craft</span>
               <span className="text-xs text-muted-foreground font-mono truncate max-w-[200px] sm:max-w-xs">
                 Instância: {instanceId}
               </span>

@@ -1,4 +1,4 @@
-// MCHost Backend v1.1
+// pokt Craft Backend v1.1
 const express = require("express");
 const cors = require("cors");
 const http = require("http");
@@ -122,7 +122,7 @@ function writeServerPortInProperties(instanceDir, port) {
   } else {
     fs.writeFileSync(
       propsPath,
-      `#Minecraft server properties\n# Gerado pelo MCHost\nserver-port=${port}\n`,
+      `#Minecraft server properties\n# Gerado pelo pokt Craft\nserver-port=${port}\n`,
       "utf-8"
     );
   }
@@ -223,7 +223,7 @@ function loadInstancesRegistry() {
         try {
           normalizeInstanceServerPorts(data);
         } catch (e) {
-          console.error("[MCHost] normalizeInstanceServerPorts:", e.message);
+          console.error("[pokt Craft] normalizeInstanceServerPorts:", e.message);
         }
         if (migrateInstanceOwners(data)) {
           saveInstancesRegistry(data);
@@ -366,7 +366,9 @@ function attachInstance(req, res, next) {
     });
   }
 
-  const instanceId = String(req.headers["x-mchost-instance"] || "default").trim();
+  const instanceId = String(
+    req.headers["x-poktcraft-instance"] || req.headers["x-mchost-instance"] || "default"
+  ).trim();
   const inst = findInstance(instanceId);
   if (!inst) return res.status(404).json({ error: "Instância não encontrada" });
   if (Number(inst.ownerUserId) !== Number(req.user.id)) {
@@ -1189,7 +1191,7 @@ app.put("/api/properties", (req, res) => {
   try {
     const propsPath = path.join(req.instanceDir, "server.properties");
     const props = req.body;
-    let content = "#Minecraft server properties\n#Modified by MCHost\n";
+    let content = "#Minecraft server properties\n#Modified by pokt Craft\n";
     for (const [key, value] of Object.entries(props)) {
       content += `${key}=${value}\n`;
     }
@@ -1207,7 +1209,7 @@ const http2 = require("http");
 function httpGet(url) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith("https") ? https : http2;
-    mod.get(url, { headers: { "User-Agent": "MCHost/1.0" } }, (res) => {
+    mod.get(url, { headers: { "User-Agent": "poktCraft/1.0" } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         return httpGet(res.headers.location).then(resolve).catch(reject);
       }
@@ -1221,7 +1223,7 @@ function httpGet(url) {
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith("https") ? https : http2;
-    mod.get(url, { headers: { "User-Agent": "MCHost/1.0" } }, (res) => {
+    mod.get(url, { headers: { "User-Agent": "poktCraft/1.0" } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         return downloadFile(res.headers.location, dest).then(resolve).catch(reject);
       }
@@ -1701,7 +1703,7 @@ setInterval(async () => {
 // ===================== START =====================
 server.listen(PORT, () => {
   loadInstancesRegistry();
-  console.log(`MCHost Backend rodando na porta ${PORT}`);
+  console.log(`pokt Craft Backend rodando na porta ${PORT}`);
   console.log(`Instância legada (default): ${LEGACY_SERVER_DIR}`);
   console.log(`Novas instâncias em: ${INSTANCES_DATA_DIR}`);
   console.log(`JAR padrão: ${JAR_FILE}`);

@@ -36,7 +36,7 @@ export default function Login() {
           <div className="flex h-20 w-20 items-center justify-center rounded-2xl bg-primary/20 border border-primary/30 mb-4 shadow-[0_0_30px_rgba(0,255,128,0.15)]">
             <Gamepad2 className="h-10 w-10 text-primary" />
           </div>
-          <h1 className="text-3xl font-bold text-foreground tracking-tight">MCHost</h1>
+          <h1 className="text-3xl font-bold text-foreground tracking-tight">pokt Craft</h1>
           <p className="text-muted-foreground text-sm mt-1">Painel de Controle Minecraft</p>
         </div>
 
