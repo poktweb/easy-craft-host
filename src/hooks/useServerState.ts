@@ -47,7 +47,10 @@ export function useServerState() {
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    const ws = new WebSocket(WS_URL);
+    const token = localStorage.getItem("mchost_token");
+    if (!token) return;
+
+    const ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(token)}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
