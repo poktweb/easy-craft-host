@@ -15,11 +15,20 @@ const useSameOriginApi = envTruthy(import.meta.env.VITE_USE_SAME_ORIGIN_API);
 const rawViteApi = import.meta.env.VITE_API_URL;
 const trimmedViteApi = rawViteApi != null ? String(rawViteApi).trim() : "";
 
-const API_URL: string = useSameOriginApi
-  ? ""
-  : trimmedViteApi.length > 0
-    ? trimmedViteApi.replace(/\/$/, "")
-    : getDefaultApiUrl();
+function resolveApiBase(): string {
+  if (useSameOriginApi) return "";
+
+  const fromEnv = trimmedViteApi.length > 0 ? trimmedViteApi.replace(/\/$/, "") : "";
+  const base = fromEnv.length > 0 ? fromEnv : getDefaultApiUrl();
+
+  // Página HTTPS não pode chamar API http:// (Mixed Content). Usa mesma origem — exige proxy /api e /ws.
+  if (typeof window !== "undefined" && window.location.protocol === "https:" && base.startsWith("http://")) {
+    return "";
+  }
+  return base;
+}
+
+const API_URL: string = resolveApiBase();
 
 /**
  * URL do WebSocket dos logs (só válida no browser em modo same-origin ou com base absoluta).
