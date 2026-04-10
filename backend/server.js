@@ -8,6 +8,7 @@ const path = require("path");
 const multer = require("multer");
 const archiver = require("archiver");
 const pidusage = require("pidusage");
+const { verifyUser, generateToken, verifyToken, changePassword, authMiddleware } = require("./auth");
 
 // ===================== CONFIG =====================
 const PORT = process.env.PORT || 3001;
