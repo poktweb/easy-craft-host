@@ -178,6 +178,11 @@ export default function ServerSettings() {
 
       <div className="space-y-2">
         <Label>Flags JVM extras (opcional)</Label>
+        <p className="text-xs text-muted-foreground">
+          No Java 24+, avisos do Netty (Unsafe::allocateMemory) somem com{" "}
+          <code className="rounded bg-muted px-1 py-0.5 text-[11px]">--sun-misc-unsafe-memory-access=allow</code>{" "}
+          (não use no Java 17/21: a JVM recusa a opção).
+        </p>
         <Input
           value={settings.extraFlags}
           onChange={(e) => setSettings((s) => ({ ...s, extraFlags: e.target.value }))}

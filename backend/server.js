@@ -34,6 +34,8 @@ const JAVA_PATH = process.env.JAVA_PATH || "java";
 const MAX_RAM = process.env.MC_MAX_RAM || "2048M";
 const MIN_RAM = process.env.MC_MIN_RAM || "512M";
 const EXTRA_FLAGS = process.env.MC_EXTRA_FLAGS || "";
+/** Sempre anexadas ao java após as flags da instância. Ex. Java 24+ / Netty: --sun-misc-unsafe-memory-access=allow */
+const APPEND_JVM_FLAGS = (process.env.MC_APPEND_JVM_FLAGS || "").trim();
 const BACKUP_DIR = process.env.MC_BACKUP_DIR || path.join(__dirname, "backups");
 const MAX_PLAYERS = parseInt(process.env.MC_MAX_PLAYERS || "20");
 const MAX_CPU = parseInt(process.env.MC_MAX_CPU || "200");
@@ -601,6 +603,7 @@ function startServer(instanceId, instanceDir) {
   const javaBin = jvm.javaPath || JAVA_PATH;
   const jarName = jvm.jarFile || JAR_FILE;
   const extra = String(jvm.extraFlags || "").trim();
+  const appended = APPEND_JVM_FLAGS ? APPEND_JVM_FLAGS.split(/\s+/).filter(Boolean) : [];
 
   const startProfile = getStartProfile(instanceDir);
   let flags = [];
@@ -613,6 +616,7 @@ function startServer(instanceId, instanceDir) {
       `-Xms${minRam}`,
       `-Xmx${maxRam}`,
       ...(extra ? extra.split(/\s+/).filter(Boolean) : []),
+      ...appended,
       `@${startProfile.argsFile}`,
       "nogui",
     ];
@@ -625,6 +629,7 @@ function startServer(instanceId, instanceDir) {
       `-Xms${minRam}`,
       `-Xmx${maxRam}`,
       ...(extra ? extra.split(/\s+/).filter(Boolean) : []),
+      ...appended,
       "-jar",
       jarName,
       "nogui",
