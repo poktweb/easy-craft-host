@@ -81,10 +81,15 @@ function startServer() {
     return { error: `${JAR_FILE} não encontrado em ${SERVER_DIR}` };
   }
 
+  // Auto-aceitar EULA
+  const eulaPath = path.join(SERVER_DIR, "eula.txt");
+  fs.writeFileSync(eulaPath, "eula=true\n", "utf-8");
+
   serverStatus = "starting";
   broadcast("status", serverStatus);
   logs = [];
   logId = 0;
+  addLog("INFO", "EULA aceito automaticamente.");
   addLog("INFO", "Iniciando servidor...");
 
   const flags = [
