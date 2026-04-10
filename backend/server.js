@@ -86,12 +86,17 @@ function collectUsedMcPorts(reg) {
   return used;
 }
 
+/** Nova instância: porta aleatória livre no intervalo [DEFAULT_MC_PORT, MAX_MC_PORT], sem repetir portas já usadas por outra instância. */
 function allocateNextServerPort(reg) {
   const used = collectUsedMcPorts(reg);
+  const free = [];
   for (let p = DEFAULT_MC_PORT; p <= MAX_MC_PORT; p++) {
-    if (!used.has(p)) return p;
+    if (!used.has(p)) free.push(p);
   }
-  throw new Error("Sem portas TCP livres para novas instâncias");
+  if (free.length === 0) {
+    throw new Error("Sem portas TCP livres para novas instâncias");
+  }
+  return free[Math.floor(Math.random() * free.length)];
 }
 
 function writeServerPortInProperties(instanceDir, port) {
