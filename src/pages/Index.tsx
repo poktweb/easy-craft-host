@@ -1,6 +1,8 @@
 import { useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Terminal, FolderOpen, Settings2, Archive, Wrench, Wifi, WifiOff, LogOut, Shield, Box } from "lucide-react";
+import { Terminal, FolderOpen, Settings2, Archive, Wrench, Wifi, WifiOff, LogOut, Shield, Box, ArrowLeft } from "lucide-react";
+import { setApiInstanceId } from "@/lib/api";
 import { useServerState } from "@/hooks/useServerState";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
@@ -14,7 +16,9 @@ import ServerSettings from "@/components/ServerSettings";
 import ServerVersions from "@/components/ServerVersions";
 
 const Index = () => {
-  const server = useServerState();
+  const { instanceId = "default" } = useParams<{ instanceId: string }>();
+  setApiInstanceId(instanceId);
+  const server = useServerState(instanceId);
   const { username, logout } = useAuth();
   const [tab, setTab] = useState("console");
 
@@ -24,10 +28,20 @@ const Index = () => {
       <header className="border-b border-border/50 bg-card/80 backdrop-blur-sm sticky top-0 z-50">
         <div className="container flex items-center justify-between py-3">
           <div className="flex items-center gap-3">
+            <Button variant="ghost" size="icon" className="shrink-0" asChild>
+              <Link to="/" title="Voltar às instâncias">
+                <ArrowLeft className="h-5 w-5" />
+              </Link>
+            </Button>
             <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/20 border border-primary/30 glow-primary">
               <span className="text-lg font-bold text-primary glow-text">MC</span>
             </div>
-            <span className="text-lg font-bold text-foreground">MCHost</span>
+            <div className="flex flex-col min-w-0">
+              <span className="text-lg font-bold text-foreground leading-tight">MCHost</span>
+              <span className="text-xs text-muted-foreground font-mono truncate max-w-[200px] sm:max-w-xs">
+                Instância: {instanceId}
+              </span>
+            </div>
           </div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-1.5 text-sm">

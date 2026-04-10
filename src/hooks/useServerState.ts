@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { WS_URL, apiStartServer, apiStopServer, apiRestartServer, apiSendCommand } from "@/lib/api";
+import { WS_URL, apiStartServer, apiStopServer, apiRestartServer, apiSendCommand, setApiInstanceId } from "@/lib/api";
 import { toast } from "sonner";
 
 export type ServerStatus = "stopped" | "starting" | "running" | "stopping";
@@ -35,7 +35,7 @@ const DEFAULT_STATS: ServerStats = {
   storage: 0, maxStorage: "10 GB", players: 0, maxPlayers: 20, uptime: 0,
 };
 
-export function useServerState() {
+export function useServerState(instanceId: string) {
   const [status, setStatus] = useState<ServerStatus>("stopped");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [stats, setStats] = useState<ServerStats>(DEFAULT_STATS);
@@ -50,12 +50,15 @@ export function useServerState() {
     const token = localStorage.getItem("mchost_token");
     if (!token) return;
 
-    const ws = new WebSocket(`${WS_URL}?token=${encodeURIComponent(token)}`);
+    setApiInstanceId(instanceId);
+    const ws = new WebSocket(
+      `${WS_URL}?token=${encodeURIComponent(token)}&instance=${encodeURIComponent(instanceId)}`
+    );
     wsRef.current = ws;
 
     ws.onopen = () => {
       setConnected(true);
-      console.log("WebSocket conectado");
+      setApiInstanceId(instanceId);
     };
 
     ws.onmessage = (event) => {
@@ -86,42 +89,53 @@ export function useServerState() {
     ws.onclose = () => {
       setConnected(false);
       wsRef.current = null;
-      // Auto reconnect after 3s
       reconnectRef.current = setTimeout(connectWs, 3000);
     };
 
     ws.onerror = () => {
       ws.close();
     };
-  }, []);
+  }, [instanceId]);
 
   useEffect(() => {
+    setApiInstanceId(instanceId);
+    setStatus("stopped");
+    setLogs([]);
+    setStats(DEFAULT_STATS);
+    setConnected(false);
+    if (reconnectRef.current) clearTimeout(reconnectRef.current);
+    wsRef.current?.close();
+    wsRef.current = null;
     connectWs();
     return () => {
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
       wsRef.current?.close();
     };
-  }, [connectWs]);
+  }, [instanceId, connectWs]);
 
   const startServer = useCallback(async () => {
+    setApiInstanceId(instanceId);
     const res = await apiStartServer();
     if (res.error) toast.error(res.error);
-  }, []);
+  }, [instanceId]);
 
   const stopServer = useCallback(async () => {
+    setApiInstanceId(instanceId);
     const res = await apiStopServer();
     if (res.error) toast.error(res.error);
-  }, []);
+  }, [instanceId]);
 
   const restartServer = useCallback(async () => {
+    setApiInstanceId(instanceId);
     const res = await apiRestartServer();
     if (res.error) toast.error(res.error);
-  }, []);
+  }, [instanceId]);
 
   const sendCommand = useCallback(async (cmd: string) => {
+    setApiInstanceId(instanceId);
     const res = await apiSendCommand(cmd);
     if (res.error) toast.error(res.error);
-  }, []);
+  }, [instanceId]);
 
   return {
     status, stats, logs, connected,

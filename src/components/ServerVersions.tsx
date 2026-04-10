@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Zap, Settings, Eye, Globe, ArrowRight, Download, Loader2, CheckCircle2, AlertCircle, Plug, Link2 } from "lucide-react";
-import { API_URL } from "@/lib/api";
+import { API_URL, getAuthHeaders } from "@/lib/api";
 
 interface ServerType {
   id: string;
@@ -96,13 +96,6 @@ interface ModItem {
   downloads: number;
   iconUrl?: string | null;
   author?: string;
-}
-
-function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem("mchost_token");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  return headers;
 }
 
 export default function ServerVersions() {

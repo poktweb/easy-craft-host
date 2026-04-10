@@ -10,17 +10,31 @@ const WS_URL = API_URL.replace(/^http/, "ws") + "/ws";
 
 export { API_URL, WS_URL };
 
-function getAuthHeaders(): Record<string, string> {
+let currentInstanceId = "default";
+
+export function setApiInstanceId(id: string) {
+  currentInstanceId = id && id.length ? id : "default";
+}
+
+export function getApiInstanceId() {
+  return currentInstanceId;
+}
+
+export function getAuthHeaders(): Record<string, string> {
   const token = localStorage.getItem("mchost_token");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-MCHost-Instance": currentInstanceId,
+  };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   return headers;
 }
 
 function getAuthHeaderOnly(): Record<string, string> {
   const token = localStorage.getItem("mchost_token");
-  if (token) return { Authorization: `Bearer ${token}` };
-  return {};
+  const h: Record<string, string> = { "X-MCHost-Instance": currentInstanceId };
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
 }
 
 async function authFetch(url: string, options: RequestInit = {}) {
@@ -154,6 +168,33 @@ export async function apiSaveProperties(props: Record<string, string>) {
   const res = await authFetch(`${API_URL}/api/properties`, {
     method: "PUT",
     body: JSON.stringify(props),
+  });
+  return res.json();
+}
+
+// ===================== INSTANCES & JVM SETTINGS =====================
+export async function apiListInstances() {
+  const res = await authFetch(`${API_URL}/api/instances`);
+  return res.json();
+}
+
+export async function apiCreateInstance(name: string) {
+  const res = await authFetch(`${API_URL}/api/instances`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+  return res.json();
+}
+
+export async function apiGetInstanceSettings() {
+  const res = await authFetch(`${API_URL}/api/instance-settings`);
+  return res.json();
+}
+
+export async function apiPutInstanceSettings(body: Record<string, unknown>) {
+  const res = await authFetch(`${API_URL}/api/instance-settings`, {
+    method: "PUT",
+    body: JSON.stringify(body),
   });
   return res.json();
 }

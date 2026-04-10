@@ -13,7 +13,7 @@ const { verifyUser, generateToken, verifyToken, changePassword, authMiddleware }
 
 // ===================== CONFIG =====================
 const PORT = process.env.PORT || 3001;
-const SERVER_DIR = process.env.MC_SERVER_DIR || path.join(__dirname, "minecraft");
+const LEGACY_SERVER_DIR = process.env.MC_SERVER_DIR || path.join(__dirname, "minecraft");
 const JAR_FILE = process.env.MC_JAR || "server.jar";
 const JAVA_PATH = process.env.JAVA_PATH || "java";
 const MAX_RAM = process.env.MC_MAX_RAM || "2048M";
@@ -25,13 +25,125 @@ const MAX_CPU = parseInt(process.env.MC_MAX_CPU || "200");
 const MAX_STORAGE = process.env.MC_MAX_STORAGE || "10 GB";
 const MAX_RAM_DISPLAY = process.env.MC_MAX_RAM_DISPLAY || MAX_RAM.replace("M", " MB").replace("G", " GB");
 
-// ===================== STATE =====================
-let mcProcess = null;         // child_process
-let serverStatus = "stopped"; // stopped | starting | running | stopping
-let logs = [];                // { id, timestamp, level, message }
-let logId = 0;
-let startTime = null;
-const START_PROFILE_PATH = path.join(SERVER_DIR, ".mchost_start_profile.json");
+const INSTANCES_STORE = path.join(__dirname, "instances.json");
+const INSTANCES_DATA_DIR = path.join(__dirname, "data_instances");
+const SETTINGS_FILENAME = ".mchost_settings.json";
+
+function parseRamEnvToMb(value) {
+  const m = String(value || "")
+    .trim()
+    .match(/^(\d+)\s*([MG]?)$/i);
+  if (!m) return 512;
+  const n = parseInt(m[1], 10);
+  const u = (m[2] || "M").toUpperCase();
+  return u === "G" ? n * 1024 : n;
+}
+
+function ensureDir(dir) {
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function loadInstancesRegistry() {
+  if (fs.existsSync(INSTANCES_STORE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(INSTANCES_STORE, "utf-8"));
+      if (data && Array.isArray(data.instances) && data.instances.length) return data;
+    } catch (_e) {}
+  }
+  const initial = {
+    instances: [{ id: "default", name: "Servidor principal", mode: "legacy" }],
+  };
+  ensureDir(path.dirname(INSTANCES_STORE));
+  fs.writeFileSync(INSTANCES_STORE, JSON.stringify(initial, null, 2), "utf-8");
+  return initial;
+}
+
+function saveInstancesRegistry(data) {
+  fs.writeFileSync(INSTANCES_STORE, JSON.stringify(data, null, 2), "utf-8");
+}
+
+function getInstancePath(inst) {
+  if (inst.mode === "legacy") return LEGACY_SERVER_DIR;
+  return path.join(INSTANCES_DATA_DIR, inst.id);
+}
+
+function findInstance(id) {
+  const reg = loadInstancesRegistry();
+  return reg.instances.find((i) => i.id === id);
+}
+
+function createEmptyInstanceState() {
+  return {
+    mcProcess: null,
+    serverStatus: "stopped",
+    logs: [],
+    logId: 0,
+    startTime: null,
+    installProgress: null,
+  };
+}
+
+const instanceStates = new Map();
+
+function getInstanceState(instanceId) {
+  if (!instanceStates.has(instanceId)) instanceStates.set(instanceId, createEmptyInstanceState());
+  return instanceStates.get(instanceId);
+}
+
+function getDefaultJvmSettings() {
+  return {
+    javaVersion: "17",
+    minRamMb: parseRamEnvToMb(MIN_RAM),
+    maxRamMb: parseRamEnvToMb(MAX_RAM),
+    javaPath: JAVA_PATH,
+    jarFile: JAR_FILE,
+    extraFlags: EXTRA_FLAGS,
+    autoRestart: true,
+    crashDetection: true,
+    autoBackup: true,
+    backupIntervalHours: 24,
+  };
+}
+
+function readJvmSettings(instanceDir) {
+  const settingsPath = path.join(instanceDir, SETTINGS_FILENAME);
+  const base = getDefaultJvmSettings();
+  if (!fs.existsSync(settingsPath)) return base;
+  try {
+    const saved = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    return { ...base, ...saved };
+  } catch (_e) {
+    return base;
+  }
+}
+
+function writeJvmSettings(instanceDir, partial) {
+  const cur = readJvmSettings(instanceDir);
+  const next = { ...cur, ...partial };
+  fs.writeFileSync(path.join(instanceDir, SETTINGS_FILENAME), JSON.stringify(next, null, 2), "utf-8");
+  return next;
+}
+
+function formatMaxRamDisplayFromMb(mb) {
+  if (mb >= 1024 && mb % 1024 === 0) return `${mb / 1024} GB`;
+  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
+  return `${mb} MB`;
+}
+
+function attachInstance(req, res, next) {
+  const pathOnly = req.originalUrl.split("?")[0];
+  if (!pathOnly.startsWith("/api/")) return next();
+  if (pathOnly.startsWith("/api/auth/")) return next();
+  if (pathOnly === "/api/instances" && (req.method === "GET" || req.method === "POST")) return next();
+
+  const instanceId = String(req.headers["x-mchost-instance"] || "default").trim();
+  const inst = findInstance(instanceId);
+  if (!inst) return res.status(404).json({ error: "Instância não encontrada" });
+  req.mchostInstanceId = instanceId;
+  req.instanceDir = getInstancePath(inst);
+  ensureDir(req.instanceDir);
+  next();
+}
 
 // ===================== EXPRESS =====================
 const app = express();
@@ -66,6 +178,7 @@ app.post("/api/auth/change-password", authMiddleware, (req, res) => {
 
 // Apply auth middleware to all other routes
 app.use("/api", authMiddleware);
+app.use(attachInstance);
 const server = http.createServer(app);
 
 // ===================== WEBSOCKET =====================
@@ -73,66 +186,74 @@ const wss = new WebSocketServer({ server, path: "/ws" });
 const clients = new Set();
 
 wss.on("connection", (ws, req) => {
-  // Validate token from query string
   const url = new URL(req.url, `http://${req.headers.host}`);
   const token = url.searchParams.get("token");
+  const instanceId = url.searchParams.get("instance") || "default";
   if (!token || !verifyToken(token)) {
     ws.close(4001, "Unauthorized");
     return;
   }
+  if (!findInstance(instanceId)) {
+    ws.close(4004, "Unknown instance");
+    return;
+  }
+  ws.mchostInstanceId = instanceId;
   clients.add(ws);
-  // Send current state
-  ws.send(JSON.stringify({ type: "status", data: serverStatus }));
-  ws.send(JSON.stringify({ type: "logs", data: logs.slice(-500) }));
+  const st = getInstanceState(instanceId);
+  ws.send(JSON.stringify({ type: "status", data: st.serverStatus }));
+  ws.send(JSON.stringify({ type: "logs", data: st.logs.slice(-500) }));
   ws.on("close", () => clients.delete(ws));
 });
 
-function broadcast(type, data) {
+function broadcast(type, data, instanceId) {
   const msg = JSON.stringify({ type, data });
   for (const ws of clients) {
-    if (ws.readyState === 1) ws.send(msg);
+    if (ws.readyState === 1 && ws.mchostInstanceId === instanceId) ws.send(msg);
   }
 }
 
-function addLog(level, message) {
+function addLog(instanceId, level, message) {
+  const st = getInstanceState(instanceId);
   const now = new Date();
   const timestamp = [now.getHours(), now.getMinutes(), now.getSeconds()]
     .map((n) => String(n).padStart(2, "0"))
     .join(":");
-  const entry = { id: ++logId, timestamp, level, message };
-  logs.push(entry);
-  if (logs.length > 2000) logs = logs.slice(-1500);
-  broadcast("log", entry);
+  const entry = { id: ++st.logId, timestamp, level, message };
+  st.logs.push(entry);
+  if (st.logs.length > 2000) st.logs = st.logs.slice(-1500);
+  broadcast("log", entry, instanceId);
 }
 
 // ===================== MINECRAFT PROCESS =====================
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+function startProfilePath(instanceDir) {
+  return path.join(instanceDir, ".mchost_start_profile.json");
 }
 
-function saveStartProfile(profile) {
-  ensureDir(SERVER_DIR);
-  fs.writeFileSync(START_PROFILE_PATH, JSON.stringify(profile, null, 2), "utf-8");
+function saveStartProfile(instanceDir, profile) {
+  ensureDir(instanceDir);
+  fs.writeFileSync(startProfilePath(instanceDir), JSON.stringify(profile, null, 2), "utf-8");
 }
 
-function getStartProfile() {
-  if (!fs.existsSync(START_PROFILE_PATH)) return null;
+function getStartProfile(instanceDir) {
+  const p = startProfilePath(instanceDir);
+  if (!fs.existsSync(p)) return null;
   try {
-    return JSON.parse(fs.readFileSync(START_PROFILE_PATH, "utf-8"));
+    return JSON.parse(fs.readFileSync(p, "utf-8"));
   } catch (_e) {
     return null;
   }
 }
 
-function clearStartProfile() {
-  if (fs.existsSync(START_PROFILE_PATH)) fs.unlinkSync(START_PROFILE_PATH);
+function clearStartProfile(instanceDir) {
+  const p = startProfilePath(instanceDir);
+  if (fs.existsSync(p)) fs.unlinkSync(p);
 }
 
-function getForgeLikeArgsFile(startType) {
+function getForgeLikeArgsFile(instanceDir, startType) {
   const root =
     startType === "neoforge"
-      ? path.join(SERVER_DIR, "libraries", "net", "neoforged", "neoforge")
-      : path.join(SERVER_DIR, "libraries", "net", "minecraftforge", "forge");
+      ? path.join(instanceDir, "libraries", "net", "neoforged", "neoforge")
+      : path.join(instanceDir, "libraries", "net", "minecraftforge", "forge");
   if (!fs.existsSync(root)) return null;
   try {
     const versions = fs.readdirSync(root).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
@@ -141,18 +262,18 @@ function getForgeLikeArgsFile(startType) {
       const candidates = ["win_args.txt", "unix_args.txt"];
       for (const name of candidates) {
         const p = path.join(base, name);
-        if (fs.existsSync(p)) return path.relative(SERVER_DIR, p);
+        if (fs.existsSync(p)) return path.relative(instanceDir, p);
       }
     }
   } catch (_e) {}
   return null;
 }
 
-function runProcess(command, args, cwd) {
+function runProcess(instanceId, command, args, cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout.on("data", (data) => addLog("INFO", data.toString().trim()));
-    child.stderr.on("data", (data) => addLog("WARN", data.toString().trim()));
+    child.stdout.on("data", (data) => addLog(instanceId, "INFO", data.toString().trim()));
+    child.stderr.on("data", (data) => addLog(instanceId, "WARN", data.toString().trim()));
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) resolve();
@@ -161,91 +282,99 @@ function runProcess(command, args, cwd) {
   });
 }
 
-function startServer() {
-  if (mcProcess) return { error: "Servidor já está rodando" };
-  ensureDir(SERVER_DIR);
+function startServer(instanceId, instanceDir) {
+  const st = getInstanceState(instanceId);
+  if (st.mcProcess) return { error: "Servidor já está rodando" };
+  ensureDir(instanceDir);
 
-  const startProfile = getStartProfile();
+  const jvm = readJvmSettings(instanceDir);
+  const minMb = Math.min(Math.max(256, jvm.minRamMb), jvm.maxRamMb);
+  const maxMb = Math.max(minMb, jvm.maxRamMb);
+  const minRam = `${minMb}M`;
+  const maxRam = `${maxMb}M`;
+  const javaBin = jvm.javaPath || JAVA_PATH;
+  const jarName = jvm.jarFile || JAR_FILE;
+  const extra = String(jvm.extraFlags || "").trim();
+
+  const startProfile = getStartProfile(instanceDir);
   let flags = [];
   if (startProfile?.mode === "argsFile" && startProfile.argsFile) {
-    const argsPath = path.join(SERVER_DIR, startProfile.argsFile);
+    const argsPath = path.join(instanceDir, startProfile.argsFile);
     if (!fs.existsSync(argsPath)) {
       return { error: `Arquivo de inicialização não encontrado: ${startProfile.argsFile}` };
     }
     flags = [
-      `-Xms${MIN_RAM}`,
-      `-Xmx${MAX_RAM}`,
-      ...(EXTRA_FLAGS ? EXTRA_FLAGS.split(" ").filter(Boolean) : []),
+      `-Xms${minRam}`,
+      `-Xmx${maxRam}`,
+      ...(extra ? extra.split(/\s+/).filter(Boolean) : []),
       `@${startProfile.argsFile}`,
       "nogui",
     ];
   } else {
-    const jarPath = path.join(SERVER_DIR, JAR_FILE);
+    const jarPath = path.join(instanceDir, jarName);
     if (!fs.existsSync(jarPath)) {
-      return { error: `${JAR_FILE} não encontrado em ${SERVER_DIR}` };
+      return { error: `${jarName} não encontrado nesta instância` };
     }
     flags = [
-      `-Xms${MIN_RAM}`,
-      `-Xmx${MAX_RAM}`,
-      ...(EXTRA_FLAGS ? EXTRA_FLAGS.split(" ").filter(Boolean) : []),
+      `-Xms${minRam}`,
+      `-Xmx${maxRam}`,
+      ...(extra ? extra.split(/\s+/).filter(Boolean) : []),
       "-jar",
-      JAR_FILE,
+      jarName,
       "nogui",
     ];
   }
 
-  // Auto-aceitar EULA
-  const eulaPath = path.join(SERVER_DIR, "eula.txt");
+  const eulaPath = path.join(instanceDir, "eula.txt");
   fs.writeFileSync(eulaPath, "eula=true\n", "utf-8");
 
-  serverStatus = "starting";
-  broadcast("status", serverStatus);
-  logs = [];
-  logId = 0;
-  addLog("INFO", "EULA aceito automaticamente.");
-  addLog("INFO", "Iniciando servidor...");
+  st.serverStatus = "starting";
+  broadcast("status", st.serverStatus, instanceId);
+  st.logs = [];
+  st.logId = 0;
+  addLog(instanceId, "INFO", "EULA aceito automaticamente.");
+  addLog(instanceId, "INFO", "Iniciando servidor...");
 
-  mcProcess = spawn(JAVA_PATH, flags, {
-    cwd: SERVER_DIR,
+  st.mcProcess = spawn(javaBin, flags, {
+    cwd: instanceDir,
     stdio: ["pipe", "pipe", "pipe"],
   });
 
-  mcProcess.stdout.on("data", (data) => {
+  st.mcProcess.stdout.on("data", (data) => {
     const lines = data.toString().split("\n").filter(Boolean);
     for (const line of lines) {
       const parsed = parseLogLine(line);
-      addLog(parsed.level, parsed.message);
-      // Detect server ready
+      addLog(instanceId, parsed.level, parsed.message);
       if (line.includes("Done (") || line.includes("For help, type")) {
-        if (serverStatus === "starting") {
-          serverStatus = "running";
-          startTime = Date.now();
-          broadcast("status", serverStatus);
+        if (st.serverStatus === "starting") {
+          st.serverStatus = "running";
+          st.startTime = Date.now();
+          broadcast("status", st.serverStatus, instanceId);
         }
       }
     }
   });
 
-  mcProcess.stderr.on("data", (data) => {
+  st.mcProcess.stderr.on("data", (data) => {
     const lines = data.toString().split("\n").filter(Boolean);
     for (const line of lines) {
-      addLog("ERROR", line);
+      addLog(instanceId, "ERROR", line);
     }
   });
 
-  mcProcess.on("close", (code) => {
-    addLog("INFO", `Servidor encerrado com código ${code}`);
-    mcProcess = null;
-    serverStatus = "stopped";
-    startTime = null;
-    broadcast("status", serverStatus);
+  st.mcProcess.on("close", (code) => {
+    addLog(instanceId, "INFO", `Servidor encerrado com código ${code}`);
+    st.mcProcess = null;
+    st.serverStatus = "stopped";
+    st.startTime = null;
+    broadcast("status", st.serverStatus, instanceId);
   });
 
-  mcProcess.on("error", (err) => {
-    addLog("ERROR", `Erro ao iniciar: ${err.message}`);
-    mcProcess = null;
-    serverStatus = "stopped";
-    broadcast("status", serverStatus);
+  st.mcProcess.on("error", (err) => {
+    addLog(instanceId, "ERROR", `Erro ao iniciar: ${err.message}`);
+    st.mcProcess = null;
+    st.serverStatus = "stopped";
+    broadcast("status", st.serverStatus, instanceId);
   });
 
   return { success: true };
@@ -260,32 +389,33 @@ function parseLogLine(line) {
   return { level: "INFO", message: line };
 }
 
-function stopServer() {
-  if (!mcProcess) return { error: "Servidor não está rodando" };
-  serverStatus = "stopping";
-  broadcast("status", serverStatus);
-  addLog("INFO", "Parando servidor...");
-  mcProcess.stdin.write("stop\n");
-  // Force kill after 30s
+function stopServer(instanceId) {
+  const st = getInstanceState(instanceId);
+  if (!st.mcProcess) return { error: "Servidor não está rodando" };
+  st.serverStatus = "stopping";
+  broadcast("status", st.serverStatus, instanceId);
+  addLog(instanceId, "INFO", "Parando servidor...");
+  st.mcProcess.stdin.write("stop\n");
   setTimeout(() => {
-    if (mcProcess) {
-      mcProcess.kill("SIGKILL");
-      addLog("WARN", "Servidor forçado a parar (timeout)");
+    if (st.mcProcess) {
+      st.mcProcess.kill("SIGKILL");
+      addLog(instanceId, "WARN", "Servidor forçado a parar (timeout)");
     }
   }, 30000);
   return { success: true };
 }
 
-function restartServer() {
-  if (!mcProcess) return { error: "Servidor não está rodando" };
-  serverStatus = "stopping";
-  broadcast("status", serverStatus);
-  addLog("INFO", "Reiniciando servidor...");
-  mcProcess.stdin.write("stop\n");
+function restartServer(instanceId, instanceDir) {
+  const st = getInstanceState(instanceId);
+  if (!st.mcProcess) return { error: "Servidor não está rodando" };
+  st.serverStatus = "stopping";
+  broadcast("status", st.serverStatus, instanceId);
+  addLog(instanceId, "INFO", "Reiniciando servidor...");
+  st.mcProcess.stdin.write("stop\n");
 
   const waitForStop = () => {
-    if (!mcProcess) {
-      setTimeout(() => startServer(), 1000);
+    if (!st.mcProcess) {
+      setTimeout(() => startServer(instanceId, instanceDir), 1000);
     } else {
       setTimeout(waitForStop, 500);
     }
@@ -294,59 +424,53 @@ function restartServer() {
   return { success: true };
 }
 
-function sendCommand(command) {
-  if (!mcProcess) return { error: "Servidor não está rodando" };
+function sendCommand(instanceId, command) {
+  const st = getInstanceState(instanceId);
+  if (!st.mcProcess) return { error: "Servidor não está rodando" };
   const cmd = command.startsWith("/") ? command.slice(1) : command;
-  mcProcess.stdin.write(cmd + "\n");
-  addLog("INFO", `> ${command}`);
+  st.mcProcess.stdin.write(cmd + "\n");
+  addLog(instanceId, "INFO", `> ${command}`);
   return { success: true };
 }
 
 // ===================== STATS =====================
-async function getStats() {
+async function getStats(instanceId, instanceDir) {
+  const st = getInstanceState(instanceId);
   let cpu = 0;
   let ram = 0;
   let players = 0;
 
-  if (mcProcess && mcProcess.pid) {
+  if (st.mcProcess && st.mcProcess.pid) {
     try {
-      const usage = await pidusage(mcProcess.pid);
+      const usage = await pidusage(st.mcProcess.pid);
       cpu = Math.round(usage.cpu * 100) / 100;
-      ram = Math.round((usage.memory / 1024 / 1024 / 1024) * 100) / 100; // GB
-    } catch (_e) {
-      // process may have exited
-    }
+      ram = Math.round((usage.memory / 1024 / 1024 / 1024) * 100) / 100;
+    } catch (_e) {}
   }
 
-  // Get storage used
   let storage = 0;
   try {
-    storage = getDirSizeMB(SERVER_DIR);
+    storage = getDirSizeMB(instanceDir);
   } catch (_e) {}
 
-  // Get player count from server.properties and/or log parsing
-  // We'll use a simple approach - try to read the latest player count
-  if (serverStatus === "running" && mcProcess) {
-    // Simple estimation from recent logs
-    const recentJoins = logs.filter(
-      (l) => l.message.includes("joined the game")
-    ).length;
-    const recentLeaves = logs.filter(
-      (l) => l.message.includes("left the game")
-    ).length;
+  if (st.serverStatus === "running" && st.mcProcess) {
+    const recentJoins = st.logs.filter((l) => l.message.includes("joined the game")).length;
+    const recentLeaves = st.logs.filter((l) => l.message.includes("left the game")).length;
     players = Math.max(0, recentJoins - recentLeaves);
   }
+
+  const jvm = readJvmSettings(instanceDir);
 
   return {
     cpu,
     maxCpu: MAX_CPU,
     ram,
-    maxRam: MAX_RAM_DISPLAY,
+    maxRam: formatMaxRamDisplayFromMb(jvm.maxRamMb),
     storage: Math.round(storage * 100) / 100,
     maxStorage: MAX_STORAGE,
     players,
     maxPlayers: MAX_PLAYERS,
-    uptime: startTime ? Math.floor((Date.now() - startTime) / 1000) : 0,
+    uptime: st.startTime ? Math.floor((Date.now() - st.startTime) / 1000) : 0,
   };
 }
 
@@ -366,47 +490,131 @@ function getDirSizeMB(dirPath) {
   return totalSize / 1024 / 1024;
 }
 
+// ===================== ROUTES: INSTANCES (lista / criar) =====================
+app.get("/api/instances", (req, res) => {
+  try {
+    const reg = loadInstancesRegistry();
+    const out = reg.instances.map((i) => {
+      const st = getInstanceState(i.id);
+      return {
+        id: i.id,
+        name: i.name,
+        mode: i.mode,
+        status: st.serverStatus,
+      };
+    });
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/instances", (req, res) => {
+  try {
+    const name = String(req.body?.name || "Novo servidor").trim() || "Novo servidor";
+    const reg = loadInstancesRegistry();
+    const id = `inst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    reg.instances.push({ id, name, mode: "data" });
+    saveInstancesRegistry(reg);
+    const dir = getInstancePath({ id, mode: "data" });
+    ensureDir(dir);
+    res.json({ success: true, id, name });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ===================== ROUTES: JVM / host settings (persistido por instância) =====================
+app.get("/api/instance-settings", (req, res) => {
+  try {
+    const settings = readJvmSettings(req.instanceDir);
+    res.json(settings);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put("/api/instance-settings", (req, res) => {
+  try {
+    const body = req.body || {};
+    const minRamMb = parseInt(body.minRamMb, 10);
+    const maxRamMb = parseInt(body.maxRamMb, 10);
+    const patch = {
+      javaVersion: body.javaVersion != null ? String(body.javaVersion) : undefined,
+      javaPath: body.javaPath != null ? String(body.javaPath) : undefined,
+      jarFile: body.jarFile != null ? String(body.jarFile) : undefined,
+      extraFlags: body.extraFlags != null ? String(body.extraFlags) : undefined,
+      autoRestart: typeof body.autoRestart === "boolean" ? body.autoRestart : undefined,
+      crashDetection: typeof body.crashDetection === "boolean" ? body.crashDetection : undefined,
+      autoBackup: typeof body.autoBackup === "boolean" ? body.autoBackup : undefined,
+      backupIntervalHours: body.backupIntervalHours != null ? parseInt(body.backupIntervalHours, 10) : undefined,
+    };
+    if (Number.isFinite(minRamMb)) patch.minRamMb = Math.max(256, minRamMb);
+    if (Number.isFinite(maxRamMb)) patch.maxRamMb = Math.max(256, maxRamMb);
+    for (const k of Object.keys(patch)) {
+      if (patch[k] === undefined) delete patch[k];
+    }
+    const st = getInstanceState(req.mchostInstanceId);
+    const affectsJvm =
+      body.minRamMb != null ||
+      body.maxRamMb != null ||
+      body.javaPath != null ||
+      body.jarFile != null ||
+      body.extraFlags != null ||
+      body.javaVersion != null;
+    if (st.mcProcess && affectsJvm) {
+      return res.status(400).json({ error: "Pare o servidor antes de alterar memória, Java ou flags JVM" });
+    }
+    const saved = writeJvmSettings(req.instanceDir, patch);
+    res.json({ success: true, settings: saved });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // ===================== ROUTES: SERVER CONTROL =====================
 app.post("/api/server/start", (req, res) => {
-  const result = startServer();
+  const result = startServer(req.mchostInstanceId, req.instanceDir);
   res.json(result);
 });
 
 app.post("/api/server/stop", (req, res) => {
-  const result = stopServer();
+  const result = stopServer(req.mchostInstanceId);
   res.json(result);
 });
 
 app.post("/api/server/restart", (req, res) => {
-  const result = restartServer();
+  const result = restartServer(req.mchostInstanceId, req.instanceDir);
   res.json(result);
 });
 
 app.post("/api/server/command", (req, res) => {
   const { command } = req.body;
   if (!command) return res.status(400).json({ error: "Comando é obrigatório" });
-  const result = sendCommand(command);
+  const result = sendCommand(req.mchostInstanceId, command);
   res.json(result);
 });
 
 app.get("/api/server/status", (req, res) => {
-  res.json({ status: serverStatus });
+  const st = getInstanceState(req.mchostInstanceId);
+  res.json({ status: st.serverStatus });
 });
 
 app.get("/api/server/stats", async (req, res) => {
-  const stats = await getStats();
+  const stats = await getStats(req.mchostInstanceId, req.instanceDir);
   res.json(stats);
 });
 
 app.get("/api/server/logs", (req, res) => {
+  const st = getInstanceState(req.mchostInstanceId);
   const limit = parseInt(req.query.limit) || 500;
-  res.json(logs.slice(-limit));
+  res.json(st.logs.slice(-limit));
 });
 
 // ===================== ROUTES: FILE MANAGER =====================
-function resolveSafePath(relativePath) {
-  const resolved = path.resolve(SERVER_DIR, relativePath || "");
-  if (!resolved.startsWith(path.resolve(SERVER_DIR))) {
+function resolveSafePath(instanceDir, relativePath) {
+  const resolved = path.resolve(instanceDir, relativePath || "");
+  if (!resolved.startsWith(path.resolve(instanceDir))) {
     throw new Error("Acesso negado: caminho fora do diretório do servidor");
   }
   return resolved;
@@ -414,7 +622,7 @@ function resolveSafePath(relativePath) {
 
 app.get("/api/files", (req, res) => {
   try {
-    const dirPath = resolveSafePath(req.query.path || "");
+    const dirPath = resolveSafePath(req.instanceDir, req.query.path || "");
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
     const files = entries.map((entry) => {
       const fullPath = path.join(dirPath, entry.name);
@@ -439,7 +647,7 @@ app.get("/api/files", (req, res) => {
 
 app.get("/api/files/content", (req, res) => {
   try {
-    const filePath = resolveSafePath(req.query.path);
+    const filePath = resolveSafePath(req.instanceDir, req.query.path);
     const content = fs.readFileSync(filePath, "utf-8");
     res.json({ content });
   } catch (err) {
@@ -450,7 +658,7 @@ app.get("/api/files/content", (req, res) => {
 app.put("/api/files/content", (req, res) => {
   try {
     const { path: filePath, content } = req.body;
-    const resolved = resolveSafePath(filePath);
+    const resolved = resolveSafePath(req.instanceDir, filePath);
     fs.writeFileSync(resolved, content, "utf-8");
     res.json({ success: true });
   } catch (err) {
@@ -461,7 +669,7 @@ app.put("/api/files/content", (req, res) => {
 app.post("/api/files/create", (req, res) => {
   try {
     const { path: filePath, type } = req.body;
-    const resolved = resolveSafePath(filePath);
+    const resolved = resolveSafePath(req.instanceDir, filePath);
     if (type === "folder") {
       fs.mkdirSync(resolved, { recursive: true });
     } else {
@@ -475,7 +683,7 @@ app.post("/api/files/create", (req, res) => {
 
 app.delete("/api/files", (req, res) => {
   try {
-    const filePath = resolveSafePath(req.query.path);
+    const filePath = resolveSafePath(req.instanceDir, req.query.path);
     const stat = fs.statSync(filePath);
     if (stat.isDirectory()) {
       fs.rmSync(filePath, { recursive: true, force: true });
@@ -490,7 +698,7 @@ app.delete("/api/files", (req, res) => {
 
 app.get("/api/files/download", (req, res) => {
   try {
-    const filePath = resolveSafePath(req.query.path);
+    const filePath = resolveSafePath(req.instanceDir, req.query.path);
     res.download(filePath);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -502,7 +710,7 @@ const upload = multer({ dest: path.join(__dirname, "tmp_uploads") });
 
 app.post("/api/files/upload", upload.array("files"), (req, res) => {
   try {
-    const targetDir = resolveSafePath(req.body.path || "");
+    const targetDir = resolveSafePath(req.instanceDir, req.body.path || "");
     ensureDir(targetDir);
     for (const file of req.files) {
       const dest = path.join(targetDir, file.originalname);
@@ -514,15 +722,21 @@ app.post("/api/files/upload", upload.array("files"), (req, res) => {
   }
 });
 
+function instanceBackupDir(instanceId) {
+  const d = path.join(BACKUP_DIR, instanceId);
+  ensureDir(d);
+  return d;
+}
+
 // ===================== ROUTES: BACKUPS =====================
 app.get("/api/backups", (req, res) => {
-  ensureDir(BACKUP_DIR);
+  const bdir = instanceBackupDir(req.mchostInstanceId);
   try {
-    const entries = fs.readdirSync(BACKUP_DIR);
+    const entries = fs.readdirSync(bdir);
     const backups = entries
       .filter((f) => f.endsWith(".tar.gz") || f.endsWith(".zip"))
       .map((f) => {
-        const stat = fs.statSync(path.join(BACKUP_DIR, f));
+        const stat = fs.statSync(path.join(bdir, f));
         return {
           name: f,
           size: formatSize(stat.size),
@@ -537,19 +751,19 @@ app.get("/api/backups", (req, res) => {
 });
 
 app.post("/api/backups/create", (req, res) => {
-  ensureDir(BACKUP_DIR);
+  const bdir = instanceBackupDir(req.mchostInstanceId);
   const now = new Date();
   const name = `backup_${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}.tar.gz`;
-  const outPath = path.join(BACKUP_DIR, name);
+  const outPath = path.join(bdir, name);
 
   try {
     const output = fs.createWriteStream(outPath);
     const archive = archiver("tar", { gzip: true });
     archive.pipe(output);
-    archive.directory(SERVER_DIR, false);
+    archive.directory(req.instanceDir, false);
 
     output.on("close", () => {
-      addLog("INFO", `Backup criado: ${name} (${formatSize(archive.pointer())})`);
+      addLog(req.mchostInstanceId, "INFO", `Backup criado: ${name} (${formatSize(archive.pointer())})`);
       res.json({ success: true, name });
     });
 
@@ -564,7 +778,7 @@ app.post("/api/backups/create", (req, res) => {
 });
 
 app.get("/api/backups/download", (req, res) => {
-  const backupPath = path.join(BACKUP_DIR, path.basename(req.query.name));
+  const backupPath = path.join(instanceBackupDir(req.mchostInstanceId), path.basename(req.query.name));
   if (!fs.existsSync(backupPath)) {
     return res.status(404).json({ error: "Backup não encontrado" });
   }
@@ -572,7 +786,7 @@ app.get("/api/backups/download", (req, res) => {
 });
 
 app.delete("/api/backups", (req, res) => {
-  const backupPath = path.join(BACKUP_DIR, path.basename(req.query.name));
+  const backupPath = path.join(instanceBackupDir(req.mchostInstanceId), path.basename(req.query.name));
   try {
     fs.unlinkSync(backupPath);
     res.json({ success: true });
@@ -584,7 +798,7 @@ app.delete("/api/backups", (req, res) => {
 // ===================== ROUTES: PROPERTIES =====================
 app.get("/api/properties", (req, res) => {
   try {
-    const propsPath = path.join(SERVER_DIR, "server.properties");
+    const propsPath = path.join(req.instanceDir, "server.properties");
     if (!fs.existsSync(propsPath)) {
       return res.json({});
     }
@@ -603,7 +817,7 @@ app.get("/api/properties", (req, res) => {
 
 app.put("/api/properties", (req, res) => {
   try {
-    const propsPath = path.join(SERVER_DIR, "server.properties");
+    const propsPath = path.join(req.instanceDir, "server.properties");
     const props = req.body;
     let content = "#Minecraft server properties\n#Modified by MCHost\n";
     for (const [key, value] of Object.entries(props)) {
@@ -650,7 +864,7 @@ function downloadFile(url, dest) {
   });
 }
 
-async function downloadFileWithFallback(urls, dest) {
+async function downloadFileWithFallback(urls, dest, instanceId) {
   let lastError = null;
   for (const url of urls) {
     try {
@@ -658,7 +872,7 @@ async function downloadFileWithFallback(urls, dest) {
       return;
     } catch (err) {
       lastError = err;
-      addLog("WARN", `Falha ao baixar de ${url}: ${err.message}`);
+      addLog(instanceId, "WARN", `Falha ao baixar de ${url}: ${err.message}`);
     }
   }
   throw lastError || new Error("Falha ao baixar arquivo");
@@ -684,21 +898,21 @@ function resolveModLoader(serverType) {
 }
 
 // Get current installed server info
-function getCurrentServerInfo() {
-  const infoPath = path.join(SERVER_DIR, ".mchost_server_info.json");
+function getCurrentServerInfo(instanceDir) {
+  const infoPath = path.join(instanceDir, ".mchost_server_info.json");
   if (fs.existsSync(infoPath)) {
     try { return JSON.parse(fs.readFileSync(infoPath, "utf-8")); } catch (_e) {}
   }
   return null;
 }
 
-function saveServerInfo(info) {
-  const infoPath = path.join(SERVER_DIR, ".mchost_server_info.json");
+function saveServerInfo(instanceDir, info) {
+  const infoPath = path.join(instanceDir, ".mchost_server_info.json");
   fs.writeFileSync(infoPath, JSON.stringify(info, null, 2), "utf-8");
 }
 
 app.get("/api/versions/current", (req, res) => {
-  const info = getCurrentServerInfo();
+  const info = getCurrentServerInfo(req.instanceDir);
   res.json(info || { type: "unknown", version: "unknown" });
 });
 
@@ -762,15 +976,20 @@ app.get("/api/versions/:type", async (req, res) => {
 });
 
 // Install a specific server version
-let installProgress = null;
-
 app.post("/api/versions/install", async (req, res) => {
   const { type, version } = req.body;
+  const instanceId = req.mchostInstanceId;
+  const instanceDir = req.instanceDir;
+  const st = getInstanceState(instanceId);
   if (!type || !version) return res.status(400).json({ error: "Tipo e versão são obrigatórios" });
-  if (mcProcess) return res.status(400).json({ error: "Pare o servidor antes de trocar a versão" });
+  if (st.mcProcess) return res.status(400).json({ error: "Pare o servidor antes de trocar a versão" });
 
-  installProgress = { type, version, status: "downloading", progress: 0 };
-  broadcast("install_progress", installProgress);
+  const jvm = readJvmSettings(instanceDir);
+  const jarName = jvm.jarFile || JAR_FILE;
+  const javaBin = jvm.javaPath || JAVA_PATH;
+
+  st.installProgress = { type, version, status: "downloading", progress: 0 };
+  broadcast("install_progress", st.installProgress, instanceId);
 
   try {
     let downloadUrl = "";
@@ -797,24 +1016,24 @@ app.post("/api/versions/install", async (req, res) => {
         `https://cdn.getbukkit.org/spigot/spigot-${version}.jar`,
       ];
 
-      installProgress.status = "downloading";
-      broadcast("install_progress", installProgress);
-      addLog("INFO", `Baixando ${type} ${version}...`);
+      st.installProgress.status = "downloading";
+      broadcast("install_progress", st.installProgress, instanceId);
+      addLog(instanceId, "INFO", `Baixando ${type} ${version}...`);
 
-      const jarPath = path.join(SERVER_DIR, JAR_FILE);
+      const jarPath = path.join(instanceDir, jarName);
       if (fs.existsSync(jarPath)) {
         fs.unlinkSync(jarPath);
-        addLog("INFO", "server.jar antigo removido.");
+        addLog(instanceId, "INFO", "server.jar antigo removido.");
       }
 
-      ensureDir(SERVER_DIR);
-      await downloadFileWithFallback(spigotUrls, jarPath);
-      clearStartProfile();
-      saveServerInfo({ type, version, installedAt: new Date().toISOString() });
+      ensureDir(instanceDir);
+      await downloadFileWithFallback(spigotUrls, jarPath, instanceId);
+      clearStartProfile(instanceDir);
+      saveServerInfo(instanceDir, { type, version, installedAt: new Date().toISOString() });
 
-      installProgress = { type, version, status: "done", progress: 100 };
-      broadcast("install_progress", installProgress);
-      addLog("INFO", `${type} ${version} instalado com sucesso!`);
+      st.installProgress = { type, version, status: "done", progress: 100 };
+      broadcast("install_progress", st.installProgress, instanceId);
+      addLog(instanceId, "INFO", `${type} ${version} instalado com sucesso!`);
       return res.json({ success: true });
     } else if (type === "fabric") {
       const loadersResp = await httpGet("https://meta.fabricmc.net/v2/versions/loader");
@@ -833,20 +1052,20 @@ app.post("/api/versions/install", async (req, res) => {
 
       const installerName = `forge-${version}-${forgeVersion}-installer.jar`;
       const installerUrl = `https://maven.minecraftforge.net/net/minecraftforge/forge/${version}-${forgeVersion}/${installerName}`;
-      const installerPath = path.join(SERVER_DIR, installerName);
+      const installerPath = path.join(instanceDir, installerName);
       await downloadFile(installerUrl, installerPath);
-      addLog("INFO", `Executando installer do Forge ${version}-${forgeVersion}...`);
-      await runProcess(JAVA_PATH, ["-jar", installerName, "--installServer"], SERVER_DIR);
+      addLog(instanceId, "INFO", `Executando installer do Forge ${version}-${forgeVersion}...`);
+      await runProcess(instanceId, javaBin, ["-jar", installerName, "--installServer"], instanceDir);
 
-      const argsFile = getForgeLikeArgsFile("forge");
+      const argsFile = getForgeLikeArgsFile(instanceDir, "forge");
       if (!argsFile) throw new Error("Instalação concluída, mas arquivo de argumentos do Forge não foi encontrado");
-      saveStartProfile({ mode: "argsFile", argsFile, type: "forge", installedAt: new Date().toISOString() });
+      saveStartProfile(instanceDir, { mode: "argsFile", argsFile, type: "forge", installedAt: new Date().toISOString() });
 
       if (fs.existsSync(installerPath)) fs.unlinkSync(installerPath);
-      saveServerInfo({ type, version: `${version}-${forgeVersion}`, installedAt: new Date().toISOString() });
-      installProgress = { type, version: `${version}-${forgeVersion}`, status: "done", progress: 100 };
-      broadcast("install_progress", installProgress);
-      addLog("INFO", `forge ${version}-${forgeVersion} instalado com sucesso!`);
+      saveServerInfo(instanceDir, { type, version: `${version}-${forgeVersion}`, installedAt: new Date().toISOString() });
+      st.installProgress = { type, version: `${version}-${forgeVersion}`, status: "done", progress: 100 };
+      broadcast("install_progress", st.installProgress, instanceId);
+      addLog(instanceId, "INFO", `forge ${version}-${forgeVersion} instalado com sucesso!`);
       return res.json({ success: true });
     } else if (type === "neoforge") {
       const versionsResp = await httpGet("https://maven.neoforged.net/releases/net/neoforged/neoforge/");
@@ -858,20 +1077,20 @@ app.post("/api/versions/install", async (req, res) => {
 
       const installerName = `neoforge-${fullVersion}-installer.jar`;
       const installerUrl = `https://maven.neoforged.net/releases/net/neoforged/neoforge/${fullVersion}/${installerName}`;
-      const installerPath = path.join(SERVER_DIR, installerName);
+      const installerPath = path.join(instanceDir, installerName);
       await downloadFile(installerUrl, installerPath);
-      addLog("INFO", `Executando installer do NeoForge ${fullVersion}...`);
-      await runProcess(JAVA_PATH, ["-jar", installerName, "--installServer"], SERVER_DIR);
+      addLog(instanceId, "INFO", `Executando installer do NeoForge ${fullVersion}...`);
+      await runProcess(instanceId, javaBin, ["-jar", installerName, "--installServer"], instanceDir);
 
-      const argsFile = getForgeLikeArgsFile("neoforge");
+      const argsFile = getForgeLikeArgsFile(instanceDir, "neoforge");
       if (!argsFile) throw new Error("Instalação concluída, mas arquivo de argumentos do NeoForge não foi encontrado");
-      saveStartProfile({ mode: "argsFile", argsFile, type: "neoforge", installedAt: new Date().toISOString() });
+      saveStartProfile(instanceDir, { mode: "argsFile", argsFile, type: "neoforge", installedAt: new Date().toISOString() });
 
       if (fs.existsSync(installerPath)) fs.unlinkSync(installerPath);
-      saveServerInfo({ type, version: fullVersion, installedAt: new Date().toISOString() });
-      installProgress = { type, version: fullVersion, status: "done", progress: 100 };
-      broadcast("install_progress", installProgress);
-      addLog("INFO", `neoforge ${fullVersion} instalado com sucesso!`);
+      saveServerInfo(instanceDir, { type, version: fullVersion, installedAt: new Date().toISOString() });
+      st.installProgress = { type, version: fullVersion, status: "done", progress: 100 };
+      broadcast("install_progress", st.installProgress, instanceId);
+      addLog(instanceId, "INFO", `neoforge ${fullVersion} instalado com sucesso!`);
       return res.json({ success: true });
     } else if (type === "vanilla") {
       const manifestResp = await httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
@@ -883,38 +1102,38 @@ app.post("/api/versions/install", async (req, res) => {
       downloadUrl = versionData.downloads.server.url;
     }
 
-    installProgress.status = "downloading";
-    broadcast("install_progress", installProgress);
-    addLog("INFO", `Baixando ${type} ${version}...`);
+    st.installProgress.status = "downloading";
+    broadcast("install_progress", st.installProgress, instanceId);
+    addLog(instanceId, "INFO", `Baixando ${type} ${version}...`);
 
-    // Delete old server.jar
-    const jarPath = path.join(SERVER_DIR, JAR_FILE);
+    const jarPath = path.join(instanceDir, jarName);
     if (fs.existsSync(jarPath)) {
       fs.unlinkSync(jarPath);
-      addLog("INFO", "server.jar antigo removido.");
+      addLog(instanceId, "INFO", "server.jar antigo removido.");
     }
 
-    ensureDir(SERVER_DIR);
+    ensureDir(instanceDir);
     await downloadFile(downloadUrl, jarPath);
-    clearStartProfile();
+    clearStartProfile(instanceDir);
 
-    saveServerInfo({ type, version, installedAt: new Date().toISOString() });
+    saveServerInfo(instanceDir, { type, version, installedAt: new Date().toISOString() });
 
-    installProgress = { type, version, status: "done", progress: 100 };
-    broadcast("install_progress", installProgress);
-    addLog("INFO", `${type} ${version} instalado com sucesso!`);
+    st.installProgress = { type, version, status: "done", progress: 100 };
+    broadcast("install_progress", st.installProgress, instanceId);
+    addLog(instanceId, "INFO", `${type} ${version} instalado com sucesso!`);
 
     res.json({ success: true });
   } catch (err) {
-    installProgress = { type, version, status: "error", error: err.message };
-    broadcast("install_progress", installProgress);
-    addLog("ERROR", `Erro ao instalar ${type} ${version}: ${err.message}`);
+    st.installProgress = { type, version, status: "error", error: err.message };
+    broadcast("install_progress", st.installProgress, instanceId);
+    addLog(instanceId, "ERROR", `Erro ao instalar ${type} ${version}: ${err.message}`);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.get("/api/versions/install/progress", (req, res) => {
-  res.json(installProgress || { status: "idle" });
+  const st = getInstanceState(req.mchostInstanceId);
+  res.json(st.installProgress || { status: "idle" });
 });
 
 // ===================== ROUTES: PLUGINS =====================
@@ -928,7 +1147,7 @@ function sanitizePluginName(name) {
 
 app.get("/api/plugins/list", (req, res) => {
   try {
-    const pluginsDir = path.join(SERVER_DIR, "plugins");
+    const pluginsDir = path.join(req.instanceDir, "plugins");
     if (!fs.existsSync(pluginsDir)) return res.json([]);
     const plugins = fs.readdirSync(pluginsDir)
       .filter((name) => name.toLowerCase().endsWith(".jar"))
@@ -949,7 +1168,7 @@ app.post("/api/plugins/install", async (req, res) => {
   }
 
   try {
-    const pluginsDir = path.join(SERVER_DIR, "plugins");
+    const pluginsDir = path.join(req.instanceDir, "plugins");
     ensureDir(pluginsDir);
 
     const urlObj = new URL(url);
@@ -958,7 +1177,7 @@ app.post("/api/plugins/install", async (req, res) => {
     const dest = path.join(pluginsDir, fileName);
 
     await downloadFile(url, dest);
-    addLog("INFO", `Plugin instalado: ${fileName}`);
+    addLog(req.mchostInstanceId, "INFO", `Plugin instalado: ${fileName}`);
     res.json({ success: true, name: fileName });
   } catch (err) {
     res.status(500).json({ error: `Falha ao baixar plugin: ${err.message}` });
@@ -1020,7 +1239,7 @@ app.get("/api/mods/catalog", async (req, res) => {
 
 app.get("/api/mods/list", (req, res) => {
   try {
-    const modsDir = path.join(SERVER_DIR, "mods");
+    const modsDir = path.join(req.instanceDir, "mods");
     if (!fs.existsSync(modsDir)) return res.json([]);
     const mods = fs.readdirSync(modsDir)
       .filter((name) => name.toLowerCase().endsWith(".jar"))
@@ -1063,14 +1282,14 @@ app.post("/api/mods/install", async (req, res) => {
       return res.status(500).json({ error: "Arquivo do mod não encontrado na versão selecionada" });
     }
 
-    const modsDir = path.join(SERVER_DIR, "mods");
+    const modsDir = path.join(req.instanceDir, "mods");
     ensureDir(modsDir);
     const safeName = sanitizePluginName(file.filename || `${projectId}.jar`);
     const finalName = safeName.toLowerCase().endsWith(".jar") ? safeName : `${safeName}.jar`;
     const dest = path.join(modsDir, finalName);
 
     await downloadFile(file.url, dest);
-    addLog("INFO", `Mod instalado: ${finalName}`);
+    addLog(req.mchostInstanceId, "INFO", `Mod instalado: ${finalName}`);
     res.json({ success: true, name: finalName });
   } catch (err) {
     res.status(500).json({ error: `Falha ao instalar mod: ${err.message}` });
@@ -1088,18 +1307,28 @@ function formatSize(bytes) {
 
 // ===================== STATS BROADCAST =====================
 setInterval(async () => {
-  if (clients.size > 0) {
-    const stats = await getStats();
-    broadcast("stats", stats);
+  if (clients.size === 0) return;
+  const ids = new Set();
+  for (const ws of clients) {
+    if (ws.readyState === 1 && ws.mchostInstanceId) ids.add(ws.mchostInstanceId);
+  }
+  for (const instanceId of ids) {
+    const inst = findInstance(instanceId);
+    if (!inst) continue;
+    const instanceDir = getInstancePath(inst);
+    const stats = await getStats(instanceId, instanceDir);
+    broadcast("stats", stats, instanceId);
   }
 }, 3000);
 
 // ===================== START =====================
 server.listen(PORT, () => {
+  loadInstancesRegistry();
   console.log(`MCHost Backend rodando na porta ${PORT}`);
-  console.log(`Diretório do servidor: ${SERVER_DIR}`);
-  console.log(`JAR: ${JAR_FILE}`);
-  console.log(`RAM: ${MIN_RAM} - ${MAX_RAM}`);
-  ensureDir(SERVER_DIR);
+  console.log(`Instância legada (default): ${LEGACY_SERVER_DIR}`);
+  console.log(`Novas instâncias em: ${INSTANCES_DATA_DIR}`);
+  console.log(`JAR padrão: ${JAR_FILE}`);
+  ensureDir(LEGACY_SERVER_DIR);
+  ensureDir(INSTANCES_DATA_DIR);
   ensureDir(BACKUP_DIR);
 });
