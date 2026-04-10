@@ -32,7 +32,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             localStorage.removeItem("mchost_user");
           }
         })
-        .catch(() => {})
+        .catch(() => {
+          // Backend unreachable — clear token so login screen shows
+          setToken(null);
+          setUsername(null);
+          localStorage.removeItem("mchost_token");
+          localStorage.removeItem("mchost_user");
+        })
         .finally(() => setIsLoading(false));
     } else {
       setIsLoading(false);
