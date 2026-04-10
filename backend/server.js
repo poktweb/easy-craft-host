@@ -36,6 +36,34 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Auth routes (no middleware needed)
+app.post("/api/auth/login", (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: "Usuário e senha são obrigatórios" });
+  const user = verifyUser(username, password);
+  if (!user) return res.status(401).json({ error: "Usuário ou senha incorretos" });
+  const token = generateToken(user);
+  res.json({ token, username: user.username });
+});
+
+app.get("/api/auth/validate", (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) return res.status(401).json({ error: "Token não fornecido" });
+  const decoded = verifyToken(authHeader.split(" ")[1]);
+  if (!decoded) return res.status(401).json({ error: "Token inválido" });
+  res.json({ valid: true, username: decoded.username });
+});
+
+app.post("/api/auth/change-password", authMiddleware, (req, res) => {
+  const { oldPassword, newPassword } = req.body;
+  if (!oldPassword || !newPassword) return res.status(400).json({ error: "Senhas são obrigatórias" });
+  if (newPassword.length < 4) return res.status(400).json({ error: "Senha deve ter pelo menos 4 caracteres" });
+  const result = changePassword(req.user.id, oldPassword, newPassword);
+  res.json(result);
+});
+
+// Apply auth middleware to all other routes
+app.use("/api", authMiddleware);
 const server = http.createServer(app);
 
 // ===================== WEBSOCKET =====================
