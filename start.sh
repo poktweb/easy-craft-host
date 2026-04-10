@@ -34,12 +34,10 @@ if [ ! -d "$SCRIPT_DIR/backend/node_modules" ]; then
   cd "$SCRIPT_DIR/backend" && npm install
 fi
 
-# Build frontend if production and dist doesn't exist
+# Build frontend in production
 if [ "$MODE" = "production" ]; then
-  if [ ! -d "$SCRIPT_DIR/dist" ]; then
-    echo "[MCHost] Fazendo build do frontend..."
-    cd "$SCRIPT_DIR" && VITE_API_URL="http://$(hostname -I | awk '{print $1}'):$BACKEND_PORT" npm run build
-  fi
+  echo "[MCHost] Fazendo build do frontend..."
+  cd "$SCRIPT_DIR" && VITE_API_URL="http://$(hostname -I | awk '{print $1}'):$BACKEND_PORT" npm run build
 fi
 
 # Start backend
