@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Terminal, FolderOpen, Settings2, Archive, Wrench, User } from "lucide-react";
+import { Terminal, FolderOpen, Settings2, Archive, Wrench, User, Wifi, WifiOff } from "lucide-react";
 import { useServerState } from "@/hooks/useServerState";
 import ServerHeader from "@/components/ServerHeader";
 import ServerStatsBar from "@/components/ServerStats";
@@ -25,9 +25,18 @@ const Index = () => {
             </div>
             <span className="text-lg font-bold text-foreground">MCHost</span>
           </div>
-          <div className="flex items-center gap-2">
-            <User className="h-5 w-5 text-muted-foreground" />
-            <span className="text-sm font-medium text-foreground">Admin</span>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-1.5 text-sm">
+              {server.connected ? (
+                <><Wifi className="h-4 w-4 text-success" /><span className="text-success">Conectado</span></>
+              ) : (
+                <><WifiOff className="h-4 w-4 text-destructive" /><span className="text-destructive">Desconectado</span></>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <User className="h-5 w-5 text-muted-foreground" />
+              <span className="text-sm font-medium text-foreground">Admin</span>
+            </div>
           </div>
         </div>
       </header>
@@ -68,7 +77,7 @@ const Index = () => {
               <ServerConsole logs={server.logs} stats={server.stats} status={server.status} onSendCommand={server.sendCommand} />
             </TabsContent>
             <TabsContent value="files" className="m-0">
-              <FileManager files={server.files} currentPath={server.currentPath} onNavigate={server.setCurrentPath} serverProperties={server.serverProperties} />
+              <FileManager />
             </TabsContent>
             <TabsContent value="properties" className="m-0">
               <ServerProperties />
