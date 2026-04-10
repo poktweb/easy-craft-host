@@ -28,6 +28,131 @@ const MAX_RAM_DISPLAY = process.env.MC_MAX_RAM_DISPLAY || MAX_RAM.replace("M", "
 const INSTANCES_STORE = path.join(__dirname, "instances.json");
 const INSTANCES_DATA_DIR = path.join(__dirname, "data_instances");
 const SETTINGS_FILENAME = ".mchost_settings.json";
+const DEFAULT_MC_PORT = 25565;
+const MAX_MC_PORT = 65535;
+
+function parseServerPropsFileContent(content) {
+  const props = {};
+  for (const line of content.split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("#") || !t.includes("=")) continue;
+    const eq = t.indexOf("=");
+    props[t.slice(0, eq).trim()] = t.slice(eq + 1).trim();
+  }
+  return props;
+}
+
+function readServerPropertiesMap(instanceDir) {
+  const propsPath = path.join(instanceDir, "server.properties");
+  if (!fs.existsSync(propsPath)) return {};
+  try {
+    return parseServerPropsFileContent(fs.readFileSync(propsPath, "utf-8"));
+  } catch (_e) {
+    return {};
+  }
+}
+
+function getEffectiveServerPort(inst, instanceDir) {
+  const map = readServerPropertiesMap(instanceDir);
+  const fromFile = parseInt(map["server-port"], 10);
+  if (Number.isFinite(fromFile) && fromFile >= 1 && fromFile <= MAX_MC_PORT) return fromFile;
+  if (inst && inst.serverPort != null) {
+    const p = parseInt(String(inst.serverPort), 10);
+    if (Number.isFinite(p) && p >= 1 && p <= MAX_MC_PORT) return p;
+  }
+  return DEFAULT_MC_PORT;
+}
+
+function collectUsedMcPorts(reg) {
+  const used = new Set();
+  for (const inst of reg.instances) {
+    used.add(getEffectiveServerPort(inst, getInstancePath(inst)));
+  }
+  return used;
+}
+
+function allocateNextServerPort(reg) {
+  const used = collectUsedMcPorts(reg);
+  for (let p = DEFAULT_MC_PORT; p <= MAX_MC_PORT; p++) {
+    if (!used.has(p)) return p;
+  }
+  throw new Error("Sem portas TCP livres para novas instâncias");
+}
+
+function writeServerPortInProperties(instanceDir, port) {
+  const propsPath = path.join(instanceDir, "server.properties");
+  ensureDir(instanceDir);
+  if (fs.existsSync(propsPath)) {
+    const lines = fs.readFileSync(propsPath, "utf-8").split("\n");
+    let found = false;
+    const out = lines.map((line) => {
+      const t = line.trim();
+      if (t.startsWith("server-port=")) {
+        found = true;
+        return `server-port=${port}`;
+      }
+      return line;
+    });
+    if (!found) out.push(`server-port=${port}`);
+    fs.writeFileSync(propsPath, out.join("\n"), "utf-8");
+  } else {
+    fs.writeFileSync(
+      propsPath,
+      `#Minecraft server properties\n# Gerado pelo MCHost\nserver-port=${port}\n`,
+      "utf-8"
+    );
+  }
+}
+
+function normalizeInstanceServerPorts(reg) {
+  let changed = false;
+  const used = new Set();
+  const sorted = [...reg.instances].sort((a, b) => {
+    if (a.mode === "legacy" && b.mode !== "legacy") return -1;
+    if (b.mode === "legacy" && a.mode !== "legacy") return 1;
+    return 0;
+  });
+  for (const inst of sorted) {
+    const dir = getInstancePath(inst);
+    let port = getEffectiveServerPort(inst, dir);
+    if (used.has(port)) {
+      let next = DEFAULT_MC_PORT;
+      while (used.has(next)) {
+        next++;
+        if (next > MAX_MC_PORT) throw new Error("Sem portas TCP livres para instâncias");
+      }
+      port = next;
+      ensureDir(dir);
+      writeServerPortInProperties(dir, port);
+      inst.serverPort = port;
+      changed = true;
+    }
+    used.add(port);
+  }
+  if (changed) saveInstancesRegistry(reg);
+}
+
+function wipeInstanceForFullReinstall(instanceId, instanceDir, inst) {
+  const port = getEffectiveServerPort(inst, instanceDir);
+  const settingsPath = path.join(instanceDir, SETTINGS_FILENAME);
+  let jvmSnapshot = null;
+  if (fs.existsSync(settingsPath)) {
+    try {
+      jvmSnapshot = fs.readFileSync(settingsPath, "utf-8");
+    } catch (_e) {}
+  }
+  addLog(instanceId, "INFO", "Limpando a instância (mundos, mods, plugins, jars) antes da nova instalação...");
+  if (fs.existsSync(instanceDir)) {
+    fs.rmSync(instanceDir, { recursive: true, force: true });
+  }
+  ensureDir(instanceDir);
+  if (jvmSnapshot) {
+    try {
+      fs.writeFileSync(settingsPath, jvmSnapshot, "utf-8");
+    } catch (_e) {}
+  }
+  writeServerPortInProperties(instanceDir, port);
+}
 
 function parseRamEnvToMb(value) {
   const m = String(value || "")
@@ -47,7 +172,14 @@ function loadInstancesRegistry() {
   if (fs.existsSync(INSTANCES_STORE)) {
     try {
       const data = JSON.parse(fs.readFileSync(INSTANCES_STORE, "utf-8"));
-      if (data && Array.isArray(data.instances) && data.instances.length) return data;
+      if (data && Array.isArray(data.instances) && data.instances.length) {
+        try {
+          normalizeInstanceServerPorts(data);
+        } catch (e) {
+          console.error("[MCHost] normalizeInstanceServerPorts:", e.message);
+        }
+        return data;
+      }
     } catch (_e) {}
   }
   const initial = {
@@ -496,11 +628,13 @@ app.get("/api/instances", (req, res) => {
     const reg = loadInstancesRegistry();
     const out = reg.instances.map((i) => {
       const st = getInstanceState(i.id);
+      const dir = getInstancePath(i);
       return {
         id: i.id,
         name: i.name,
         mode: i.mode,
         status: st.serverStatus,
+        serverPort: getEffectiveServerPort(i, dir),
       };
     });
     res.json(out);
@@ -514,11 +648,13 @@ app.post("/api/instances", (req, res) => {
     const name = String(req.body?.name || "Novo servidor").trim() || "Novo servidor";
     const reg = loadInstancesRegistry();
     const id = `inst_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    reg.instances.push({ id, name, mode: "data" });
+    const serverPort = allocateNextServerPort(reg);
+    reg.instances.push({ id, name, mode: "data", serverPort });
     saveInstancesRegistry(reg);
     const dir = getInstancePath({ id, mode: "data" });
     ensureDir(dir);
-    res.json({ success: true, id, name });
+    writeServerPortInProperties(dir, serverPort);
+    res.json({ success: true, id, name, serverPort });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -987,6 +1123,12 @@ app.post("/api/versions/install", async (req, res) => {
   const jvm = readJvmSettings(instanceDir);
   const jarName = jvm.jarFile || JAR_FILE;
   const javaBin = jvm.javaPath || JAVA_PATH;
+
+  const instMeta = findInstance(instanceId);
+  const previousInstall = getCurrentServerInfo(instanceDir);
+  if (previousInstall && previousInstall.type) {
+    wipeInstanceForFullReinstall(instanceId, instanceDir, instMeta);
+  }
 
   st.installProgress = { type, version, status: "downloading", progress: 0 };
   broadcast("install_progress", st.installProgress, instanceId);

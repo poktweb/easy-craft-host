@@ -13,6 +13,7 @@ export interface InstanceSummary {
   name: string;
   mode?: string;
   status?: string;
+  serverPort?: number;
 }
 
 export default function InstancesHome() {
@@ -132,7 +133,10 @@ export default function InstancesHome() {
                       {inst.status === "running" ? "Online" : "Parado"}
                     </span>
                   </div>
-                  <p className="text-xs text-muted-foreground font-mono">ID: {inst.id}</p>
+                  <div className="text-xs text-muted-foreground font-mono space-y-0.5">
+                    <p>ID: {inst.id}</p>
+                    {inst.serverPort != null && <p>Porta do jogo: {inst.serverPort}</p>}
+                  </div>
                   <Button variant="secondary" size="sm" className="w-full gap-2 group-hover:bg-primary group-hover:text-primary-foreground">
                     Abrir painel
                     <ArrowRight className="h-4 w-4" />

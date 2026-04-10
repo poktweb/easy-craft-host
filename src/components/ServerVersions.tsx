@@ -6,7 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Zap, Settings, Eye, Globe, ArrowRight, Download, Loader2, CheckCircle2, AlertCircle, Plug, Link2 } from "lucide-react";
-import { API_URL, getAuthHeaders } from "@/lib/api";
+import { useParams } from "react-router-dom";
+import { API_URL, getAuthHeaders, setApiInstanceId } from "@/lib/api";
 
 interface ServerType {
   id: string;
@@ -99,6 +100,7 @@ interface ModItem {
 }
 
 export default function ServerVersions() {
+  const { instanceId = "default" } = useParams<{ instanceId: string }>();
   const [currentInfo, setCurrentInfo] = useState<CurrentInfo | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [versions, setVersions] = useState<string[]>([]);
@@ -122,13 +124,18 @@ export default function ServerVersions() {
   const [modsQuery, setModsQuery] = useState("");
   const [availableMcVersions, setAvailableMcVersions] = useState<string[]>([]);
 
+  useEffect(() => {
+    setApiInstanceId(instanceId);
+  }, [instanceId]);
+
   // Fetch current server info
   useEffect(() => {
+    setCurrentInfo(null);
     fetch(`${API_URL}/api/versions/current`, { headers: getAuthHeaders() })
       .then((r) => r.json())
       .then(setCurrentInfo)
       .catch(() => {});
-  }, []);
+  }, [instanceId]);
 
   const loadPlugins = useCallback(async () => {
     setLoadingPlugins(true);
@@ -452,7 +459,10 @@ export default function ServerVersions() {
                   {installing ? (
                     <><Loader2 className="h-4 w-4 animate-spin" />Instalando...</>
                   ) : (
-                    <><Download className="h-4 w-4" />Instalar</>
+                    <>
+                      <Download className="h-4 w-4" />
+                      {currentInfo && currentInfo.type && currentInfo.type !== "unknown" ? "Reinstalar" : "Instalar"}
+                    </>
                   )}
                 </Button>
               </div>
@@ -473,7 +483,10 @@ export default function ServerVersions() {
             )}
 
             <p className="text-xs text-muted-foreground">
-              ⚠️ O servidor deve estar parado. O server.jar atual será substituído.
+              ⚠️ O servidor deve estar parado.
+              {currentInfo && currentInfo.type && currentInfo.type !== "unknown"
+                ? " Reinstalar apaga mundos, plugins, mods e arquivos do servidor nesta instância; em seguida a nova versão é baixada. A porta do jogo e as configurações JVM do painel são mantidas."
+                : " Na primeira instalação, apenas o servidor é baixado."}
             </p>
             {(selectedType === "forge" || selectedType === "neoforge") && (
               <p className="text-xs text-muted-foreground">
