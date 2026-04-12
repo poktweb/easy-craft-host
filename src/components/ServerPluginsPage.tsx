@@ -6,7 +6,6 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Plug, Link2, Loader2 } from "lucide-react";
-import { SERVER_EDITION_TYPES, ServerTypeCard } from "@/components/serverEdition/ServerEditionTypes";
 import { setApiInstanceId, apiGetCurrentServerInfo, apiListPlugins, apiInstallPlugin } from "@/lib/api";
 
 interface CurrentInfo {
@@ -15,7 +14,7 @@ interface CurrentInfo {
   installedAt?: string;
 }
 
-export default function ServerPluginsPage({ onChooseEditionForInstall }: { onChooseEditionForInstall: (type: string) => void }) {
+export default function ServerPluginsPage() {
   const { instanceId = "default" } = useParams<{ instanceId: string }>();
   const [currentInfo, setCurrentInfo] = useState<CurrentInfo | null>(null);
   const [pluginUrl, setPluginUrl] = useState("");
@@ -83,27 +82,15 @@ export default function ServerPluginsPage({ onChooseEditionForInstall }: { onCho
     }
   };
 
-  const pluginTypes = SERVER_EDITION_TYPES.filter((s) => s.category === "plugins");
-
   return (
     <div className="space-y-8">
       <div>
         <h2 className="text-xl font-bold text-foreground mb-1">Plugins</h2>
-        <p className="text-sm text-muted-foreground mb-4">
-          Escolha o software do servidor compatível com plugins. Ao clicar, você será levado à aba{" "}
-          <span className="font-medium text-foreground">Versões</span> para escolher e instalar a versão do Minecraft.
+        <p className="text-sm text-muted-foreground max-w-2xl">
+          Esta aba é só para <span className="font-medium text-foreground">baixar e gerir plugins</span> (.jar na pasta do servidor).
+          Paper, Spigot, Purpur, Folia e a versão do Minecraft são escolhidos em{" "}
+          <span className="font-medium text-foreground">Versões</span>.
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {pluginTypes.map((server) => (
-            <ServerTypeCard
-              key={server.id}
-              server={server}
-              isSelected={false}
-              isCurrent={currentInfo?.type === server.id}
-              onSelect={() => onChooseEditionForInstall(server.id)}
-            />
-          ))}
-        </div>
       </div>
 
       <Card className="border-border/50">

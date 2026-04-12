@@ -7,7 +7,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Zap } from "lucide-react";
-import { SERVER_EDITION_TYPES, ServerTypeCard } from "@/components/serverEdition/ServerEditionTypes";
 import {
   setApiInstanceId,
   apiGetCurrentServerInfo,
@@ -33,7 +32,7 @@ interface ModItem {
   author?: string;
 }
 
-export default function ServerModsPage({ onChooseEditionForInstall }: { onChooseEditionForInstall: (type: string) => void }) {
+export default function ServerModsPage() {
   const { instanceId = "default" } = useParams<{ instanceId: string }>();
   const [currentInfo, setCurrentInfo] = useState<CurrentInfo | null>(null);
   const [modsCatalog, setModsCatalog] = useState<ModItem[]>([]);
@@ -149,27 +148,15 @@ export default function ServerModsPage({ onChooseEditionForInstall }: { onChoose
     }
   };
 
-  const moddedTypes = SERVER_EDITION_TYPES.filter((s) => s.category === "modded");
-
   return (
     <div className="space-y-8">
       <div>
         <h2 className="text-xl font-bold text-foreground mb-1">Mods</h2>
-        <p className="text-sm text-muted-foreground mb-4">
-          Escolha o modloader do servidor. Ao clicar, você será levado à aba{" "}
-          <span className="font-medium text-foreground">Versões</span> para escolher e instalar a versão do Minecraft.
+        <p className="text-sm text-muted-foreground max-w-2xl">
+          Esta aba é só para <span className="font-medium text-foreground">pesquisar e instalar mods</span> no servidor. Fabric, Forge,
+          NeoForge e a versão do jogo são definidos em <span className="font-medium text-foreground">Versões</span> — são edições do
+          servidor, não “mods” desta lista.
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {moddedTypes.map((server) => (
-            <ServerTypeCard
-              key={server.id}
-              server={server}
-              isSelected={false}
-              isCurrent={currentInfo?.type === server.id}
-              onSelect={() => onChooseEditionForInstall(server.id)}
-            />
-          ))}
-        </div>
       </div>
 
       <Card className="border-border/50">

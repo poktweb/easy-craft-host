@@ -27,15 +27,7 @@ interface InstallProgress {
   error?: string;
 }
 
-export type VersionInstallIntent = { type: string; nonce: number };
-
-export default function ServerVersions({
-  versionInstallIntent,
-  onConsumedVersionInstallIntent,
-}: {
-  versionInstallIntent: VersionInstallIntent | null;
-  onConsumedVersionInstallIntent: () => void;
-}) {
+export default function ServerVersions() {
   const { instanceId = "default" } = useParams<{ instanceId: string }>();
   const [currentInfo, setCurrentInfo] = useState<CurrentInfo | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -74,13 +66,6 @@ export default function ServerVersions({
     setVersionsUiTab("install");
   }, []);
 
-  useEffect(() => {
-    if (!versionInstallIntent) return;
-    void loadVersions(versionInstallIntent.type).finally(() => {
-      onConsumedVersionInstallIntent();
-    });
-  }, [versionInstallIntent, loadVersions, onConsumedVersionInstallIntent]);
-
   const handleInstall = async () => {
     if (!selectedType || !selectedVersion) return;
     setInstalling(true);
@@ -103,7 +88,11 @@ export default function ServerVersions({
     }
   };
 
-  const vanillaTypes = SERVER_EDITION_TYPES.filter((s) => s.category === "vanilla");
+  const categoryGroups = {
+    plugins: SERVER_EDITION_TYPES.filter((s) => s.category === "plugins"),
+    vanilla: SERVER_EDITION_TYPES.filter((s) => s.category === "vanilla"),
+    modded: SERVER_EDITION_TYPES.filter((s) => s.category === "modded"),
+  };
 
   const pickBrowse = () => {
     setSelectedType(null);
@@ -148,23 +137,54 @@ export default function ServerVersions({
               </div>
               <div className="flex-1">
                 <h3 className="font-bold text-foreground">Alterar Edição Do Minecraft</h3>
-                <p className="text-sm text-muted-foreground">Volte à escolha de edição e limpe a seleção atual.</p>
+                <p className="text-sm text-muted-foreground">Escolha a edição do Minecraft que você deseja!</p>
               </div>
               <ArrowRight className="h-5 w-5 text-muted-foreground group-hover:text-primary transition-colors" />
             </CardContent>
           </Card>
 
           <p className="text-sm text-muted-foreground">
-            Para servidores com <span className="font-medium text-foreground">plugins</span> (Paper, Spigot, etc.) use a aba{" "}
-            <span className="font-medium text-foreground">Plugins</span>. Para <span className="font-medium text-foreground">mods</span>{" "}
-            (Fabric, Forge, NeoForge) use a aba <span className="font-medium text-foreground">Mods</span>. Ao escolher o tipo, o painel
-            abre esta aba em <span className="font-medium text-foreground">Instalar versão</span>.
+            Aqui você escolhe a <span className="font-medium text-foreground">edição do servidor</span> (Vanilla, Paper, Spigot, Forge,
+            NeoForge, Fabric, etc.) e a <span className="font-medium text-foreground">versão do Minecraft</span>. Ao clicar em um tipo, o
+            painel abre <span className="font-medium text-foreground">Instalar versão</span>. As abas{" "}
+            <span className="font-medium text-foreground">Plugins</span> e <span className="font-medium text-foreground">Mods</span> servem
+            só para baixar plugins (.jar) e mods no servidor já instalado — não substituem esta escolha.
           </p>
+
+          <div>
+            <h2 className="text-xl font-bold text-foreground mb-4">Plugins</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {categoryGroups.plugins.map((server) => (
+                <ServerTypeCard
+                  key={server.id}
+                  server={server}
+                  isSelected={selectedType === server.id}
+                  isCurrent={currentInfo?.type === server.id}
+                  onSelect={() => void loadVersions(server.id)}
+                />
+              ))}
+            </div>
+          </div>
 
           <div>
             <h2 className="text-xl font-bold text-foreground mb-4">Vanilla</h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {vanillaTypes.map((server) => (
+              {categoryGroups.vanilla.map((server) => (
+                <ServerTypeCard
+                  key={server.id}
+                  server={server}
+                  isSelected={selectedType === server.id}
+                  isCurrent={currentInfo?.type === server.id}
+                  onSelect={() => void loadVersions(server.id)}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <h2 className="text-xl font-bold text-foreground mb-4">Mods</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {categoryGroups.modded.map((server) => (
                 <ServerTypeCard
                   key={server.id}
                   server={server}
@@ -181,9 +201,8 @@ export default function ServerVersions({
           {!selectedType ? (
             <Card className="border-border/50">
               <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                Escolha primeiro um tipo de servidor: use a aba <span className="font-medium text-foreground">Plugins</span>,{" "}
-                <span className="font-medium text-foreground">Mods</span> ou selecione <span className="font-medium text-foreground">Vanilla</span>{" "}
-                na aba <span className="font-medium text-foreground">Edição</span>.
+                Volte à aba <span className="font-medium text-foreground">Edição</span> e escolha um tipo de servidor (Paper, Spigot,
+                Vanilla, Fabric, Forge, NeoForge, etc.).
               </CardContent>
             </Card>
           ) : (

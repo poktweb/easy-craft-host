@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Sidebar,
@@ -40,7 +40,7 @@ import FileManager from "@/components/FileManager";
 import ServerProperties from "@/components/ServerProperties";
 import ServerBackups from "@/components/ServerBackups";
 import ServerSettings from "@/components/ServerSettings";
-import ServerVersions, { type VersionInstallIntent } from "@/components/ServerVersions";
+import ServerVersions from "@/components/ServerVersions";
 import ServerPluginsPage from "@/components/ServerPluginsPage";
 import ServerModsPage from "@/components/ServerModsPage";
 
@@ -55,20 +55,6 @@ const Index = () => {
   const server = useServerState(instanceId);
   type SidebarTab = "console" | "files" | "properties" | "backups" | "versions" | "plugins" | "mods" | "settings";
   const [tab, setTab] = useState<SidebarTab>("console");
-  const [versionInstallIntent, setVersionInstallIntent] = useState<VersionInstallIntent | null>(null);
-
-  const clearVersionInstallIntent = useCallback(() => {
-    setVersionInstallIntent(null);
-  }, []);
-
-  const requestVersionInstall = useCallback((type: string) => {
-    setVersionInstallIntent({ type, nonce: Date.now() });
-    setTab("versions");
-  }, []);
-
-  useEffect(() => {
-    setVersionInstallIntent(null);
-  }, [instanceId]);
 
   useEffect(() => {
     if (!canHost) {
@@ -217,11 +203,9 @@ const Index = () => {
               {tab === "files" && <FileManager />}
               {tab === "properties" && <ServerProperties />}
               {tab === "backups" && <ServerBackups />}
-              {tab === "versions" && (
-                <ServerVersions versionInstallIntent={versionInstallIntent} onConsumedVersionInstallIntent={clearVersionInstallIntent} />
-              )}
-              {tab === "plugins" && <ServerPluginsPage onChooseEditionForInstall={requestVersionInstall} />}
-              {tab === "mods" && <ServerModsPage onChooseEditionForInstall={requestVersionInstall} />}
+              {tab === "versions" && <ServerVersions />}
+              {tab === "plugins" && <ServerPluginsPage />}
+              {tab === "mods" && <ServerModsPage />}
               {tab === "settings" && <ServerSettings />}
             </div>
           </main>
