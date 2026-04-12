@@ -7,7 +7,17 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Zap, Settings, Eye, Globe, ArrowRight, Download, Loader2, CheckCircle2, AlertCircle, Plug, Link2 } from "lucide-react";
 import { useParams } from "react-router-dom";
-import { API_URL, getAuthHeaders, setApiInstanceId } from "@/lib/api";
+import {
+  setApiInstanceId,
+  apiGetCurrentServerInfo,
+  apiListPlugins,
+  apiListServerVersions,
+  apiInstallServerVersion,
+  apiModsCatalog,
+  apiListMods,
+  apiInstallPlugin,
+  apiInstallMod,
+} from "@/lib/api";
 
 interface ServerType {
   id: string;
@@ -131,18 +141,13 @@ export default function ServerVersions() {
   // Fetch current server info
   useEffect(() => {
     setCurrentInfo(null);
-    fetch(`${API_URL}/api/versions/current`, { headers: getAuthHeaders() })
-      .then((r) => r.json())
-      .then(setCurrentInfo)
-      .catch(() => {});
+    void apiGetCurrentServerInfo().then(setCurrentInfo).catch(() => {});
   }, [instanceId]);
 
   const loadPlugins = useCallback(async () => {
     setLoadingPlugins(true);
     try {
-      const res = await fetch(`${API_URL}/api/plugins/list`, { headers: getAuthHeaders() });
-      const data = await res.json();
-      if (Array.isArray(data)) setPlugins(data);
+      setPlugins(await apiListPlugins());
     } catch {
       // Silencioso: apenas lista auxiliar
     } finally {
@@ -161,8 +166,7 @@ export default function ServerVersions() {
     setSelectedVersion("");
     setLoadingVersions(true);
     try {
-      const res = await fetch(`${API_URL}/api/versions/${type}`, { headers: getAuthHeaders() });
-      const data = await res.json();
+      const data = await apiListServerVersions(type);
       if (data.versions) {
         setVersions(data.versions);
         setSelectedVersion(data.versions[0] || "");
@@ -179,12 +183,7 @@ export default function ServerVersions() {
     setInstalling(true);
     setInstallProgress({ status: "downloading", type: selectedType, version: selectedVersion });
     try {
-      const res = await fetch(`${API_URL}/api/versions/install`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ type: selectedType, version: selectedVersion }),
-      });
-      const data = await res.json();
+      const data = await apiInstallServerVersion(selectedType, selectedVersion);
       if (data.error) {
         toast.error(data.error);
         setInstallProgress({ status: "error", error: data.error });
@@ -216,8 +215,7 @@ export default function ServerVersions() {
   }, [gameVersion]);
 
   useEffect(() => {
-    fetch(`${API_URL}/api/versions/vanilla?limit=80`, { headers: getAuthHeaders() })
-      .then((r) => r.json())
+    void apiListServerVersions("vanilla", 80)
       .then((data) => {
         if (Array.isArray(data?.versions)) setAvailableMcVersions(data.versions);
       })
@@ -235,14 +233,17 @@ export default function ServerVersions() {
     setLoadingMods(true);
     const nextOffset = append ? modsOffset + 24 : 0;
     try {
-      const [catalogRes, installedRes] = await Promise.all([
-        fetch(
-          `${API_URL}/api/mods/catalog?serverType=${encodeURIComponent(selectedOrCurrentType)}&loader=${encodeURIComponent(modsLoader)}&version=${encodeURIComponent(modsVersion)}&q=${encodeURIComponent(modsQuery)}&offset=${nextOffset}&limit=24`,
-          { headers: getAuthHeaders() }
-        ),
-        fetch(`${API_URL}/api/mods/list`, { headers: getAuthHeaders() }),
+      const [catalogData, installedData] = await Promise.all([
+        apiModsCatalog({
+          serverType: selectedOrCurrentType,
+          loader: modsLoader,
+          version: modsVersion,
+          q: modsQuery,
+          offset: nextOffset,
+          limit: 24,
+        }),
+        apiListMods(),
       ]);
-      const [catalogData, installedData] = await Promise.all([catalogRes.json(), installedRes.json()]);
       const incoming = Array.isArray(catalogData?.mods) ? catalogData.mods : [];
       setModsCatalog((prev) => (append ? [...prev, ...incoming] : incoming));
       setModsTotalHits(Number(catalogData?.totalHits || 0));
@@ -271,17 +272,12 @@ export default function ServerVersions() {
 
     setInstallingPlugin(true);
     try {
-      const res = await fetch(`${API_URL}/api/plugins/install`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          url: pluginUrl.trim(),
-          name: pluginName.trim() || undefined,
-          serverType: selectedOrCurrentType,
-        }),
+      const data = await apiInstallPlugin({
+        url: pluginUrl.trim(),
+        name: pluginName.trim() || undefined,
+        serverType: selectedOrCurrentType,
       });
-      const data = await res.json();
-      if (!res.ok || data.error) {
+      if (data.error) {
         toast.error(data.error || "Falha ao instalar plugin");
         return;
       }
@@ -308,18 +304,13 @@ export default function ServerVersions() {
 
     setInstallingModId(mod.id);
     try {
-      const res = await fetch(`${API_URL}/api/mods/install`, {
-        method: "POST",
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          projectId: mod.id,
-          serverType: selectedOrCurrentType || undefined,
-          loader: modsLoader,
-          gameVersion: modsVersion,
-        }),
+      const data = await apiInstallMod({
+        projectId: mod.id,
+        serverType: selectedOrCurrentType || undefined,
+        loader: modsLoader,
+        gameVersion: modsVersion,
       });
-      const data = await res.json();
-      if (!res.ok || data.error) {
+      if (data.error) {
         toast.error(data.error || "Falha ao instalar mod");
         return;
       }

@@ -7,6 +7,15 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { apiListFiles, apiReadFile, apiSaveFile, apiCreateFileOrFolder, apiDeleteFile, apiUploadFiles, getDownloadUrl } from "@/lib/api";
@@ -23,6 +32,8 @@ export default function FileManager() {
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [newName, setNewName] = useState("");
   const [loading, setLoading] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadFiles = async (dirPath?: string) => {
@@ -108,6 +119,36 @@ export default function FileManager() {
     setSelected(prev => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n; });
   };
 
+  const allSelected = files.length > 0 && selected.size === files.length;
+
+  const runBulkDelete = async () => {
+    if (selected.size === 0) return;
+    setBulkDeleting(true);
+    const names = [...selected];
+    let removed = 0;
+    let lastError: string | null = null;
+    for (const name of names) {
+      const p = currentPath ? `${currentPath}/${name}` : name;
+      const res = await apiDeleteFile(p);
+      if (res.success) removed++;
+      else {
+        lastError = res.error || "Erro ao excluir";
+        break;
+      }
+    }
+    setBulkDeleting(false);
+    setBulkDeleteOpen(false);
+    if (lastError) toast.error(lastError);
+    if (removed > 0) {
+      toast.success(
+        removed === names.length
+          ? `${removed} item(ns) removido(s).`
+          : `${removed} de ${names.length} removido(s); corrija o erro e tente de novo.`,
+      );
+    }
+    loadFiles();
+  };
+
   return (
     <div>
       {/* Breadcrumb */}
@@ -136,11 +177,23 @@ export default function FileManager() {
               <ArrowLeft className="h-4 w-4 mr-1" /> Voltar
             </Button>
           )}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Checkbox checked={selected.size === files.length && files.length > 0} onCheckedChange={() => {
               setSelected(prev => prev.size === files.length ? new Set() : new Set(files.map(f => f.name)));
             }} />
             <span className="text-sm font-medium text-foreground">Selecionar Tudo</span>
+            {selected.size > 0 && (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="ml-1"
+                onClick={() => setBulkDeleteOpen(true)}
+              >
+                <Trash2 className="h-4 w-4 mr-1" />
+                {allSelected ? "Excluir todos" : `Excluir selecionados (${selected.size})`}
+              </Button>
+            )}
           </div>
         </div>
         <div className="flex gap-2">
@@ -239,6 +292,24 @@ export default function FileManager() {
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={(open) => !open && !bulkDeleting && setBulkDeleteOpen(false)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{allSelected ? "Excluir todos os itens?" : "Excluir itens selecionados?"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {selected.size} item(ns) nesta pasta serão removidos permanentemente. Pastas são apagadas com todo o conteúdo.
+              Esta ação não pode ser desfeita.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={bulkDeleting}>Cancelar</AlertDialogCancel>
+            <Button variant="destructive" disabled={bulkDeleting} onClick={() => void runBulkDelete()}>
+              {bulkDeleting ? "Excluindo…" : "Excluir"}
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

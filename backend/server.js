@@ -360,6 +360,7 @@ function attachInstance(req, res, next) {
   if (pathOnly.startsWith("/api/auth/")) return next();
   if (pathOnly.startsWith("/api/admin/")) return next();
   if (pathOnly === "/api/instances" && (req.method === "GET" || req.method === "POST")) return next();
+  if (/^\/api\/instances\/[^/]+$/.test(pathOnly) && req.method === "DELETE") return next();
 
   if (!userCanCreateInstances(req.user.id)) {
     return res.status(403).json({
@@ -891,6 +892,50 @@ app.post("/api/instances", (req, res) => {
       serverPort,
       connectAddress: `${PUBLIC_HOST}:${serverPort}`,
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/instances/:id", (req, res) => {
+  try {
+    if (!userCanCreateInstances(req.user.id)) {
+      return res.status(403).json({
+        error:
+          "Sua conta ainda não pode gerenciar servidores. Peça ao administrador para habilitar a hospedagem no painel de usuários.",
+      });
+    }
+    const id = String(req.params.id || "").trim();
+    if (!id) return res.status(400).json({ error: "ID inválido" });
+    const reg = loadInstancesRegistry();
+    const idx = reg.instances.findIndex((i) => i.id === id);
+    if (idx === -1) return res.status(404).json({ error: "Instância não encontrada" });
+    const inst = reg.instances[idx];
+    if (Number(inst.ownerUserId) !== Number(req.user.id)) {
+      return res.status(403).json({ error: "Esta instância não pertence à sua conta." });
+    }
+    if (id === "default" || inst.mode === "legacy") {
+      return res.status(400).json({ error: "A instância principal não pode ser removida." });
+    }
+    const st = getInstanceState(id);
+    if (st.mcProcess) {
+      return res.status(400).json({ error: "Pare o servidor antes de excluir a instância." });
+    }
+    if (st.installProgress && st.installProgress.status === "downloading") {
+      return res.status(400).json({ error: "Aguarde o fim da instalação antes de excluir." });
+    }
+    const dir = getInstancePath(inst);
+    reg.instances.splice(idx, 1);
+    saveInstancesRegistry(reg);
+    instanceStates.delete(id);
+    try {
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    } catch (e) {
+      console.error("[pokt Craft] Falha ao remover pasta da instância:", e.message);
+    }
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

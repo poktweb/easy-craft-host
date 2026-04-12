@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
-import { API_URL } from "@/lib/api";
+import { API_URL, getHealthUrl } from "@/lib/api";
 
 interface AuthContextType {
   token: string | null;
@@ -139,8 +139,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       return { success: false, error: data.error || `Login recusado (HTTP ${res.status})` };
     } catch (e) {
+      const healthCheck = getHealthUrl();
       const origin = typeof window !== "undefined" ? window.location.origin : "";
-      const healthCheck = API_URL === "" ? `${origin}/api/health` : `${API_URL}/api/health`;
       const target = API_URL === "" ? `${origin}/api (proxy obrigatório)` : API_URL;
       const hint =
         e instanceof TypeError

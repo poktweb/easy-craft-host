@@ -1,13 +1,26 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Plus, Server, ArrowRight, LogOut, Shield, Users, AlertCircle, Copy } from "lucide-react";
+import { Plus, Server, ArrowRight, LogOut, Shield, Users, AlertCircle, Copy, Trash2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { apiCreateInstance, apiListInstances, type HostingQuotaInfo, type InstanceSummary } from "@/lib/api";
+import { apiCreateInstance, apiDeleteInstance, apiListInstances, type HostingQuotaInfo, type InstanceSummary } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+
+function canDeleteInstance(inst: InstanceSummary) {
+  return inst.id !== "default" && inst.mode !== "legacy";
+}
 
 export default function InstancesHome() {
   const navigate = useNavigate();
@@ -17,6 +30,8 @@ export default function InstancesHome() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<InstanceSummary | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -40,6 +55,25 @@ export default function InstancesHome() {
   useEffect(() => {
     refreshProfile();
   }, [refreshProfile]);
+
+  async function confirmDeleteInstance() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const res = await apiDeleteInstance(deleteTarget.id);
+      if (res.error) {
+        toast.error(res.error);
+        return;
+      }
+      toast.success("Instância excluída");
+      setDeleteTarget(null);
+      await refresh();
+    } catch {
+      toast.error("Falha ao excluir instância");
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   async function handleCreate() {
     setCreating(true);
@@ -172,19 +206,35 @@ export default function InstancesHome() {
               >
                 <CardContent className="p-5 flex flex-col gap-3">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <Server className="h-5 w-5 text-primary" />
-                      <span className="font-semibold text-foreground">{inst.name}</span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Server className="h-5 w-5 text-primary shrink-0" />
+                      <span className="font-semibold text-foreground truncate">{inst.name}</span>
                     </div>
-                    <span
-                      className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-                        inst.status === "running"
-                          ? "bg-success/15 text-success"
-                          : "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      {inst.status === "running" ? "Online" : "Parado"}
-                    </span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {canDeleteInstance(inst) && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                          title="Excluir instância"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteTarget(inst);
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                      <span
+                        className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                          inst.status === "running"
+                            ? "bg-success/15 text-success"
+                            : "bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        {inst.status === "running" ? "Online" : "Parado"}
+                      </span>
+                    </div>
                   </div>
                   <div className="text-xs text-muted-foreground space-y-1.5">
                     <p className="font-mono">ID: {inst.id}</p>
@@ -214,6 +264,29 @@ export default function InstancesHome() {
             ))}
           </div>
         )}
+
+        <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && !deleting && setDeleteTarget(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Excluir instância?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {deleteTarget ? (
+                  <>
+                    A instância <span className="font-medium text-foreground">{deleteTarget.name}</span> (
+                    <span className="font-mono text-xs">{deleteTarget.id}</span>) será removida permanentemente, incluindo
+                    arquivos e mundos. Esta ação não pode ser desfeita. O servidor precisa estar parado.
+                  </>
+                ) : null}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleting}>Cancelar</AlertDialogCancel>
+              <Button variant="destructive" disabled={deleting} onClick={() => void confirmDeleteInstance()}>
+                {deleting ? "Excluindo…" : "Excluir"}
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </main>
     </div>
   );

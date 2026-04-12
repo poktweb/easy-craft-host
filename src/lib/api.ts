@@ -118,6 +118,11 @@ export async function apiGetStats() {
   return res.json();
 }
 
+export async function apiGetServerLogs(limit = 500) {
+  const res = await authFetch(`${API_URL}/api/server/logs?limit=${encodeURIComponent(String(limit))}`);
+  return res.json();
+}
+
 // ===================== FILES =====================
 export async function apiListFiles(dirPath: string = "") {
   const res = await authFetch(`${API_URL}/api/files?path=${encodeURIComponent(dirPath)}`);
@@ -247,6 +252,13 @@ export async function apiCreateInstance(name: string) {
   return res.json();
 }
 
+export async function apiDeleteInstance(instanceId: string) {
+  const res = await authFetch(`${API_URL}/api/instances/${encodeURIComponent(instanceId)}`, {
+    method: "DELETE",
+  });
+  return res.json();
+}
+
 export interface AdminUserRow {
   id: number;
   username: string;
@@ -296,4 +308,120 @@ export async function apiPutInstanceSettings(body: Record<string, unknown>) {
     body: JSON.stringify(body),
   });
   return res.json();
+}
+
+// ===================== HEALTH (público, sem Bearer) =====================
+/** URL absoluta de GET /api/health (mesma regra de proxy que API_URL vazio). */
+export function getHealthUrl(): string {
+  if (API_URL === "") {
+    if (typeof window !== "undefined") return `${window.location.origin}/api/health`;
+    return "/api/health";
+  }
+  return `${API_URL}/api/health`;
+}
+
+export async function apiHealth(): Promise<{ ok?: boolean }> {
+  const res = await fetch(getHealthUrl());
+  return res.json();
+}
+
+// ===================== VERSIONS / INSTALL =====================
+export async function apiGetCurrentServerInfo() {
+  const res = await authFetch(`${API_URL}/api/versions/current`);
+  return res.json();
+}
+
+export async function apiListServerVersions(type: string, limit?: number) {
+  const q = limit != null && limit > 0 ? `?limit=${encodeURIComponent(String(limit))}` : "";
+  const res = await authFetch(`${API_URL}/api/versions/${encodeURIComponent(type)}${q}`);
+  return res.json();
+}
+
+export async function apiInstallServerVersion(type: string, version: string) {
+  const res = await authFetch(`${API_URL}/api/versions/install`, {
+    method: "POST",
+    body: JSON.stringify({ type, version }),
+  });
+  return res.json();
+}
+
+export async function apiGetInstallProgress() {
+  const res = await authFetch(`${API_URL}/api/versions/install/progress`);
+  return res.json();
+}
+
+// ===================== PLUGINS =====================
+export async function apiListPlugins(): Promise<string[]> {
+  const res = await authFetch(`${API_URL}/api/plugins/list`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+export async function apiInstallPlugin(body: { url: string; name?: string; serverType: string }) {
+  const res = await authFetch(`${API_URL}/api/plugins/install`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json()) as { success?: boolean; name?: string; error?: string };
+  if (!res.ok && !data.error) return { ...data, error: `Erro HTTP ${res.status}` };
+  return data;
+}
+
+// ===================== MODS (Modrinth) =====================
+export interface ModCatalogItem {
+  id: string;
+  slug: string;
+  title: string;
+  description: string;
+  downloads: number;
+  iconUrl?: string | null;
+  author?: string;
+}
+
+export async function apiModsCatalog(params: {
+  serverType: string;
+  loader: string;
+  version: string;
+  q?: string;
+  offset?: number;
+  limit?: number;
+}) {
+  const { serverType, loader, version, q = "", offset = 0, limit = 24 } = params;
+  const search = new URLSearchParams({
+    serverType,
+    loader,
+    version,
+    q,
+    offset: String(offset),
+    limit: String(limit),
+  });
+  const res = await authFetch(`${API_URL}/api/mods/catalog?${search.toString()}`);
+  return res.json() as Promise<{
+    mods?: ModCatalogItem[];
+    totalHits?: number;
+    offset?: number;
+    limit?: number;
+    error?: string;
+  }>;
+}
+
+export async function apiListMods(): Promise<string[]> {
+  const res = await authFetch(`${API_URL}/api/mods/list`);
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+export async function apiInstallMod(body: {
+  projectId: string;
+  serverType?: string;
+  loader?: string;
+  gameVersion: string;
+}) {
+  const res = await authFetch(`${API_URL}/api/mods/install`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json()) as { success?: boolean; name?: string; error?: string };
+  if (!res.ok && !data.error) return { ...data, error: `Erro HTTP ${res.status}` };
+  return data;
 }
