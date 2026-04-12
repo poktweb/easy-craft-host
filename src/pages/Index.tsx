@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   Sidebar,
@@ -14,7 +14,21 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-import { Terminal, FolderOpen, Settings2, Archive, Wrench, Wifi, WifiOff, LogOut, Shield, Box, ArrowLeft } from "lucide-react";
+import {
+  Terminal,
+  FolderOpen,
+  Settings2,
+  Archive,
+  Wrench,
+  Wifi,
+  WifiOff,
+  LogOut,
+  Shield,
+  Box,
+  ArrowLeft,
+  Plug,
+  Puzzle,
+} from "lucide-react";
 import { setApiInstanceId, apiListInstances, apiGetStatus } from "@/lib/api";
 import { useServerState } from "@/hooks/useServerState";
 import { useAuth } from "@/contexts/AuthContext";
@@ -26,7 +40,9 @@ import FileManager from "@/components/FileManager";
 import ServerProperties from "@/components/ServerProperties";
 import ServerBackups from "@/components/ServerBackups";
 import ServerSettings from "@/components/ServerSettings";
-import ServerVersions from "@/components/ServerVersions";
+import ServerVersions, { type VersionInstallIntent } from "@/components/ServerVersions";
+import ServerPluginsPage from "@/components/ServerPluginsPage";
+import ServerModsPage from "@/components/ServerModsPage";
 
 const Index = () => {
   const { instanceId = "default" } = useParams<{ instanceId: string }>();
@@ -37,7 +53,22 @@ const Index = () => {
 
   setApiInstanceId(instanceId);
   const server = useServerState(instanceId);
-  const [tab, setTab] = useState("console");
+  type SidebarTab = "console" | "files" | "properties" | "backups" | "versions" | "plugins" | "mods" | "settings";
+  const [tab, setTab] = useState<SidebarTab>("console");
+  const [versionInstallIntent, setVersionInstallIntent] = useState<VersionInstallIntent | null>(null);
+
+  const clearVersionInstallIntent = useCallback(() => {
+    setVersionInstallIntent(null);
+  }, []);
+
+  const requestVersionInstall = useCallback((type: string) => {
+    setVersionInstallIntent({ type, nonce: Date.now() });
+    setTab("versions");
+  }, []);
+
+  useEffect(() => {
+    setVersionInstallIntent(null);
+  }, [instanceId]);
 
   useEffect(() => {
     if (!canHost) {
@@ -85,13 +116,15 @@ const Index = () => {
     );
   }
 
-  const navItems = [
-    { value: "console" as const, label: "Console", icon: Terminal },
-    { value: "files" as const, label: "Arquivos", icon: FolderOpen },
-    { value: "properties" as const, label: "Propriedades", icon: Settings2 },
-    { value: "backups" as const, label: "Backups", icon: Archive },
-    { value: "versions" as const, label: "Versões", icon: Box },
-    { value: "settings" as const, label: "Configurações", icon: Wrench },
+  const navItems: { value: SidebarTab; label: string; icon: typeof Terminal }[] = [
+    { value: "console", label: "Console", icon: Terminal },
+    { value: "files", label: "Arquivos", icon: FolderOpen },
+    { value: "properties", label: "Propriedades", icon: Settings2 },
+    { value: "backups", label: "Backups", icon: Archive },
+    { value: "versions", label: "Versões", icon: Box },
+    { value: "plugins", label: "Plugins", icon: Plug },
+    { value: "mods", label: "Mods", icon: Puzzle },
+    { value: "settings", label: "Configurações", icon: Wrench },
   ];
 
   return (
@@ -184,7 +217,11 @@ const Index = () => {
               {tab === "files" && <FileManager />}
               {tab === "properties" && <ServerProperties />}
               {tab === "backups" && <ServerBackups />}
-              {tab === "versions" && <ServerVersions />}
+              {tab === "versions" && (
+                <ServerVersions versionInstallIntent={versionInstallIntent} onConsumedVersionInstallIntent={clearVersionInstallIntent} />
+              )}
+              {tab === "plugins" && <ServerPluginsPage onChooseEditionForInstall={requestVersionInstall} />}
+              {tab === "mods" && <ServerModsPage onChooseEditionForInstall={requestVersionInstall} />}
               {tab === "settings" && <ServerSettings />}
             </div>
           </main>
